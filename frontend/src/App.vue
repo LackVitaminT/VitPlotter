@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import FileDropZone from './components/FileDropZone.vue'
 import StreamConnect from './components/StreamConnect.vue'
 import SeriesSelector from './components/SeriesSelector.vue'
@@ -10,11 +10,13 @@ import { uploadCsv } from './api.js'
 import { useUdpStream } from './stream.js'
 import { theme, toggleTheme } from './theme.js'
 import { getDragData, hasDragData } from './dnd.js'
+import { randomWelcomeTagline } from './taglines.js'
 
 // Update this to your repository URL.
 const GITHUB_URL = 'https://github.com/LackVitaminT/VitPlotter'
 
 const welcomeTab = ref('csv') // csv | udp (which connector the welcome screen shows)
+const welcomeTagline = ref(randomWelcomeTagline())
 const source = ref(null) // null | 'csv' | 'udp' (what currently drives the workspace)
 
 const parsed = ref(null) // CSV result
@@ -36,6 +38,12 @@ const xPrecision = ref(2) // fractional digits / resolution
 // Per-frame data feeding the chart.
 const activeData = computed(() => (source.value === 'udp' ? stream.chartData.value : parsed.value))
 const hasData = computed(() => source.value !== null)
+
+watch(hasData, (hasCurrentData, hadData) => {
+  if (!hasCurrentData && hadData) {
+    welcomeTagline.value = randomWelcomeTagline(welcomeTagline.value)
+  }
+})
 
 // Stable series list for the sidebar tree — does NOT change every animation frame, so the
 // tree only re-renders when the set of names changes.
@@ -226,7 +234,7 @@ function reset() {
     <main v-if="!hasData" class="welcome">
       <div class="welcome-box">
         <h1 class="hero"><Typewriter text="Plot your data." /></h1>
-        <p class="sub">A minimal, web-based plotting tool inspired by PlotJuggler.</p>
+        <p class="sub">{{ welcomeTagline }}</p>
 
         <div class="tabs">
           <button :class="{ active: welcomeTab === 'csv' }" @click="welcomeTab = 'csv'">

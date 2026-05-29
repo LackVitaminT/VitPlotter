@@ -1,0 +1,83 @@
+/* Catppuccin Latte (light) + Mocha (dark), exposed as semantic tokens. */
+
+[data-theme='light'] {
+  --bg: #eff1f5; /* base */
+  --bg-elev: #e6e9ef; /* mantle */
+  --bg-inset: #dce0e8; /* crust */
+  --surface: #ccd0da; /* surface0 */
+  --surface-hover: #bcc0cc; /* surface1 */
+  --border: rgba(76, 79, 105, 0.1);
+  --text: #4c4f69; /* text */
+  --text-muted: #6c6f85; /* subtext0 */
+  --text-dim: #8c8fa1; /* overlay1 */
+  --accent: #8839ef; /* mauve */
+  --accent-contrast: #ffffff;
+  --danger: #d20f39; /* red */
+  --shadow: 0 1px 3px rgba(76, 79, 105, 0.08), 0 8px 24px rgba(76, 79, 105, 0.06);
+}
+
+[data-theme='dark'] {
+  --bg: #1e1e2e; /* base */
+  --bg-elev: #181825; /* mantle */
+  --bg-inset: #11111b; /* crust */
+  --surface: #313244; /* surface0 */
+  --surface-hover: #45475a; /* surface1 */
+  --border: rgba(205, 214, 244, 0.08);
+  --text: #cdd6f4; /* text */
+  --text-muted: #a6adc8; /* subtext0 */
+  --text-dim: #7f849c; /* overlay1 */
+  --accent: #cba6f7; /* mauve */
+  --accent-contrast: #11111b;
+  --danger: #f38ba8; /* red */
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+#app {
+  height: 100%;
+}
+
+/* uPlot legend picks up theme text color */
+.u-legend {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.u-legend .u-marker {
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--surface);
+  border-radius: 5px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--surface-hover);
+}

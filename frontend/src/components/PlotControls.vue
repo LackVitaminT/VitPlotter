@@ -5,6 +5,9 @@ const props = defineProps({
   yMode: { type: String, default: 'auto' }, // 'auto' | 'fixed'
   yMin: { type: Number, default: 0 },
   yMax: { type: Number, default: 1 },
+  xMode: { type: String, default: 'auto' },
+  xMin: { type: Number, default: 0 },
+  xMax: { type: Number, default: 1 },
   xFormat: { type: String, default: 'number' },
   xPrecision: { type: Number, default: 2 },
   live: { type: Boolean, default: false },
@@ -14,6 +17,9 @@ const emit = defineEmits([
   'update:yMode',
   'update:yMin',
   'update:yMax',
+  'update:xMode',
+  'update:xMin',
+  'update:xMax',
   'update:xFormat',
   'update:xPrecision',
   'update:maxPoints',
@@ -53,6 +59,31 @@ const emit = defineEmits([
 
     <div class="group">
       <span class="lbl">X axis</span>
+      <div class="segmented">
+        <button :class="{ active: xMode === 'auto' }" @click="emit('update:xMode', 'auto')">
+          Auto
+        </button>
+        <button :class="{ active: xMode === 'fixed' }" @click="emit('update:xMode', 'fixed')">
+          Fixed
+        </button>
+      </div>
+      <input
+        class="num range"
+        type="number"
+        :value="xMin"
+        :disabled="xMode !== 'fixed'"
+        @input="emit('update:xMin', Number($event.target.value))"
+        aria-label="X min"
+      />
+      <span class="dash">–</span>
+      <input
+        class="num range"
+        type="number"
+        :value="xMax"
+        :disabled="xMode !== 'fixed'"
+        @input="emit('update:xMax', Number($event.target.value))"
+        aria-label="X max"
+      />
       <select
         class="sel"
         :value="xFormat"
@@ -144,6 +175,9 @@ const emit = defineEmits([
 }
 .num.wide {
   width: 84px;
+}
+.num.range {
+  width: 120px;
 }
 .sel {
   background: var(--bg-elev);

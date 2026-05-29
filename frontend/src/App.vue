@@ -32,8 +32,13 @@ const yMin = ref(0)
 const yMax = ref(1)
 
 // X-axis (bottom timestamp) display.
+const xMode = ref('auto') // 'auto' | 'fixed'
+const xMin = ref(0)
+const xMax = ref(1)
 const xFormat = ref('number') // number | elapsed | time | datetime
 const xPrecision = ref(2) // fractional digits / resolution
+const xRangeInitialized = ref(false)
+const xRangeTouched = ref(false)
 
 // Per-frame data feeding the chart.
 const activeData = computed(() => (source.value === 'udp' ? stream.chartData.value : parsed.value))
@@ -43,6 +48,37 @@ watch(hasData, (hasCurrentData, hadData) => {
   if (!hasCurrentData && hadData) {
     welcomeTagline.value = randomWelcomeTagline(welcomeTagline.value)
   }
+})
+
+function xBounds(data) {
+  const values = data?.x?.values ?? []
+  let min = Infinity
+  let max = -Infinity
+
+  for (const value of values) {
+    if (!Number.isFinite(value)) continue
+    min = Math.min(min, value)
+    max = Math.max(max, value)
+  }
+
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return null
+  if (min === max) return [min - 1, max + 1]
+  return [min, max]
+}
+
+function maybeSeedXRange(data = activeData.value) {
+  if (xMode.value !== 'fixed' || xRangeInitialized.value || xRangeTouched.value) return
+  const range = xBounds(data)
+  if (!range) return
+  xMin.value = range[0]
+  xMax.value = range[1]
+  xRangeInitialized.value = true
+}
+
+watch(activeData, maybeSeedXRange)
+
+watch(xMode, (mode) => {
+  if (mode === 'fixed') maybeSeedXRange()
 })
 
 // Stable series list for the sidebar tree — does NOT change every animation frame, so the
@@ -56,6 +92,7 @@ const seriesForSelector = computed(() => {
 async function handleFile(file) {
   loading.value = true
   error.value = ''
+  xRangeInitialized.value = false
   try {
     const data = await uploadCsv(file)
     parsed.value = data
@@ -71,6 +108,7 @@ async function handleFile(file) {
 
 // --- UDP ------------------------------------------------------------------ //
 async function handleConnect({ host, port, timestampField }) {
+  xRangeInitialized.value = false
   await stream.start(host, port, timestampField)
   if (stream.status.value === 'connected' || stream.status.value === 'connecting') {
     visible.value = new Set() // default: nothing selected (new series appear unchecked)
@@ -166,16 +204,35 @@ function reset() {
   parsed.value = null
   visible.value = new Set()
   error.value = ''
+  xRangeInitialized.value = false
+}
+
+function setXMin(value) {
+  xRangeTouched.value = true
+  xMin.value = value
+}
+
+function setXMax(value) {
+  xRangeTouched.value = true
+  xMax.value = value
 }
 </script>
 
 <template>
   <div class="layout">
     <header class="topbar">
-      <div class="brand" @click="reset">
-        <span class="dot"></span>
+      <button class="brand" type="button" aria-label="Back to welcome screen" @click="reset">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 36 36" fill="none">
+            <path class="brand-grid" d="M10 7v22M7 26h23" />
+            <path class="brand-wave" d="M8 14.5l6 6.5 5.5-12 8.5 16" />
+            <circle class="brand-node" cx="8" cy="14.5" r="2.2" />
+            <circle class="brand-node" cx="19.5" cy="9" r="2.2" />
+            <circle class="brand-node" cx="28" cy="25" r="2.2" />
+          </svg>
+        </span>
         <span class="name">VitPlotter</span>
-      </div>
+      </button>
 
       <div class="spacer"></div>
 
@@ -280,10 +337,15 @@ function reset() {
           v-model:yMode="yMode"
           v-model:yMin="yMin"
           v-model:yMax="yMax"
+          v-model:xMode="xMode"
+          :xMin="xMin"
+          :xMax="xMax"
           v-model:xFormat="xFormat"
           v-model:xPrecision="xPrecision"
           :live="source === 'udp'"
           :maxPoints="stream.maxPoints.value"
+          @update:xMin="setXMin"
+          @update:xMax="setXMax"
           @update:maxPoints="stream.maxPoints.value = $event"
         />
         <div
@@ -301,6 +363,9 @@ function reset() {
             :yMode="yMode"
             :yMin="yMin"
             :yMax="yMax"
+            :xMode="xMode"
+            :xMin="xMin"
+            :xMax="xMax"
             :xFormat="xFormat"
             :xPrecision="xPrecision"
           />
@@ -332,19 +397,62 @@ function reset() {
 .brand {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
   cursor: pointer;
 }
-.dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--accent);
+.brand-mark {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 8px;
+  background: linear-gradient(
+      145deg,
+      color-mix(in srgb, var(--accent) 24%, transparent),
+      transparent 55%
+    ),
+    var(--bg-inset);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #ffffff 18%, transparent);
+}
+.brand-mark svg {
+  width: 26px;
+  height: 26px;
+}
+.brand-grid {
+  stroke: var(--text-dim);
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  opacity: 0.7;
+}
+.brand-wave {
+  stroke: var(--accent);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.brand-node {
+  fill: #04a5e5;
+  stroke: var(--bg-inset);
+  stroke-width: 1.4;
 }
 .name {
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
+  font-family: monospace;
+  font-size: 22px;
+  font-weight: 900;
+  letter-spacing: 0;
+  line-height: 1;
+  color: transparent;
+  background: linear-gradient(92deg, var(--text) 8%, var(--accent) 54%, #04a5e5 96%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  text-shadow: 0 8px 22px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 .spacer {
   flex: 1;

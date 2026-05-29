@@ -3,7 +3,7 @@ import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import uPlot from 'uplot'
 import { PALETTES, colorFor } from '../palette.js'
 import { theme } from '../theme.js'
-import { formatTimestamp } from '../xaxis.js'
+import { formatAxisTimestamp, xAxisLabelSpace } from '../xaxis.js'
 
 const props = defineProps({
   // Backend result: { x: {name, values}, series: [{name, values}] }
@@ -16,6 +16,10 @@ const props = defineProps({
   yMode: { type: String, default: 'auto' },
   yMin: { type: Number, default: 0 },
   yMax: { type: Number, default: 1 },
+  // X axis: 'auto' follows the data, 'fixed' pins to [xMin, xMax].
+  xMode: { type: String, default: 'auto' },
+  xMin: { type: Number, default: 0 },
+  xMax: { type: Number, default: 1 },
   // X axis (bottom timestamp) display: format style + resolution (fractional digits).
   xFormat: { type: String, default: 'number' },
   xPrecision: { type: Number, default: 2 },
@@ -24,6 +28,7 @@ const props = defineProps({
 const hostEl = ref(null)
 let plot = null
 let resizeObserver = null
+let detachPlotInteractions = null
 
 // Series names/indices for the legend. Updated only on (re)build, so the legend doesn't
 // churn on every live data frame — only when the set of series changes.
@@ -47,7 +52,11 @@ function buildOptions(width, height) {
   // needs a redraw, not a rebuild.
   const xAxisOpts = {
     ...axisOpts,
-    values: (u, splits) => splits.map((v) => formatTimestamp(v, props.xFormat, props.xPrecision)),
+    size: () => (props.xFormat === 'datetime' ? 56 : 42),
+    lineGap: 1.2,
+    space: () => xAxisLabelSpace(props.xFormat),
+    values: (u, splits) =>
+      splits.map((v) => formatAxisTimestamp(v, props.xFormat, props.xPrecision)),
   }
 
   const series = [
@@ -67,7 +76,17 @@ function buildOptions(width, height) {
     series,
     axes: [xAxisOpts, axisOpts],
     scales: {
-      x: { time: false },
+      x: {
+        time: false,
+        range: (u, dataMin, dataMax) => {
+          if (props.xMode === 'fixed' && props.xMin < props.xMax) {
+            return [props.xMin, props.xMax]
+          }
+          const lo = Number.isFinite(dataMin) ? dataMin : 0
+          const hi = Number.isFinite(dataMax) ? dataMax : 1
+          return lo < hi ? [lo, hi] : [lo - 1, hi + 1]
+        },
+      },
       // Range fn reads props live, so toggling auto/fixed only needs a redraw (no rebuild),
       // and the pin survives the live setData path.
       y: {
@@ -91,8 +110,108 @@ function buildData() {
   return [props.parsed.x.values, ...props.parsed.series.map((s) => s.values)]
 }
 
+function numericBounds(values) {
+  let min = Infinity
+  let max = -Infinity
+
+  for (const value of values ?? []) {
+    if (!Number.isFinite(value)) continue
+    min = Math.min(min, value)
+    max = Math.max(max, value)
+  }
+
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return null
+  if (min === max) return [min - 1, max + 1]
+  return [min, max]
+}
+
+function xDataBounds() {
+  if (props.xMode === 'fixed' && props.xMin < props.xMax) return [props.xMin, props.xMax]
+  return numericBounds(props.parsed.x.values)
+}
+
+function resetZoom() {
+  if (!plot) return
+  const bounds = xDataBounds()
+
+  plot.batch(() => {
+    if (bounds) plot.setScale('x', { min: bounds[0], max: bounds[1] })
+    else plot.setScale('x', { min: null, max: null })
+    plot.setScale('y', { min: null, max: null })
+  })
+}
+
+function clampRangeToBounds(min, max, bounds) {
+  const [boundMin, boundMax] = bounds
+  const boundSpan = boundMax - boundMin
+  const span = max - min
+
+  if (!Number.isFinite(span) || span >= boundSpan) return bounds
+
+  if (min < boundMin) {
+    max += boundMin - min
+    min = boundMin
+  }
+  if (max > boundMax) {
+    min -= max - boundMax
+    max = boundMax
+  }
+
+  return [Math.max(boundMin, min), Math.min(boundMax, max)]
+}
+
+function onPlotWheel(e) {
+  if (!plot) return
+
+  const bounds = xDataBounds()
+  const xScale = plot.scales.x
+  if (!bounds || !Number.isFinite(xScale.min) || !Number.isFinite(xScale.max)) return
+
+  e.preventDefault()
+
+  const currentMin = xScale.min
+  const currentMax = xScale.max
+  const currentSpan = currentMax - currentMin
+  const [boundMin, boundMax] = bounds
+  const boundSpan = boundMax - boundMin
+  if (currentSpan <= 0 || boundSpan <= 0) return
+
+  const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? plot.over.clientHeight : 1
+  const factor = Math.min(4, Math.max(0.25, Math.exp((e.deltaY * unit) / 300)))
+  const rect = plot.over.getBoundingClientRect()
+  const pos = Math.min(Math.max(e.clientX - rect.left, 0), rect.width)
+  const anchor = Math.min(Math.max(plot.posToVal(pos, 'x'), boundMin), boundMax)
+  const anchorRatio = (anchor - currentMin) / currentSpan
+  const nextSpan = currentSpan * factor
+
+  let nextMin = anchor - nextSpan * anchorRatio
+  let nextMax = anchor + nextSpan * (1 - anchorRatio)
+  const clamped = clampRangeToBounds(nextMin, nextMax, bounds)
+  nextMin = clamped[0]
+  nextMax = clamped[1]
+
+  if (nextMax - nextMin <= 1e-12) return
+  plot.setScale('x', { min: nextMin, max: nextMax })
+}
+
+function attachPlotInteractions() {
+  if (!plot || props.live) return
+
+  const over = plot.over
+  const onDoubleClick = () => resetZoom()
+  over.addEventListener('wheel', onPlotWheel, { passive: false })
+  over.addEventListener('dblclick', onDoubleClick)
+
+  detachPlotInteractions = () => {
+    over.removeEventListener('wheel', onPlotWheel)
+    over.removeEventListener('dblclick', onDoubleClick)
+    detachPlotInteractions = null
+  }
+}
+
 function render() {
   if (plot) {
+    detachPlotInteractions?.()
     plot.destroy()
     plot = null
   }
@@ -101,6 +220,7 @@ function render() {
   const width = hostEl.value.clientWidth || 800
   const height = hostEl.value.clientHeight || 480
   plot = new uPlot(buildOptions(width, height), buildData(), hostEl.value)
+  attachPlotInteractions()
 }
 
 // Toggling visibility doesn't need a rebuild.
@@ -123,6 +243,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   resizeObserver?.disconnect()
+  detachPlotInteractions?.()
   plot?.destroy()
   plot = null
 })
@@ -158,7 +279,16 @@ watch(() => props.visible, applyVisibility, { deep: true })
 // Y-axis range / X-axis format changes → re-evaluate via a redraw (no rebuild; the axis
 // range and values closures read props live).
 watch(
-  () => [props.yMode, props.yMin, props.yMax, props.xFormat, props.xPrecision],
+  () => [
+    props.yMode,
+    props.yMin,
+    props.yMax,
+    props.xMode,
+    props.xMin,
+    props.xMax,
+    props.xFormat,
+    props.xPrecision,
+  ],
   () => plot && plot.redraw(),
 )
 </script>

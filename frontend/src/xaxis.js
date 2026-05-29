@@ -21,6 +21,15 @@ function pad2(n) {
   return String(n).padStart(2, '0')
 }
 
+function dateParts(v) {
+  const d = new Date(v * 1000)
+  if (isNaN(d.getTime())) return null
+  return {
+    ymd: `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`,
+    hms: `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`,
+  }
+}
+
 // Fractional part as ".xxx" (or '' when precision is 0).
 function frac(v, p) {
   if (p <= 0) return ''
@@ -46,13 +55,36 @@ export function formatTimestamp(v, format = 'number', precision = 2) {
   }
 
   // Clock / date-time: interpret the value as Unix epoch seconds.
-  const d = new Date(v * 1000)
-  if (isNaN(d.getTime())) return v.toFixed(p)
-  const hms = `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
-  if (format === 'time') return hms + frac(v, p)
+  const parts = dateParts(v)
+  if (!parts) return v.toFixed(p)
+  if (format === 'time') return parts.hms + frac(v, p)
   if (format === 'datetime') {
-    const ymd = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
-    return `${ymd} ${hms}${frac(v, p)}`
+    return `${parts.ymd} ${parts.hms}${frac(v, p)}`
   }
   return v.toFixed(p)
+}
+
+export function xAxisLabelSpace(format = 'number') {
+  if (format === 'datetime') return 110
+  if (format === 'time') return 82
+  return 62
+}
+
+export function formatAxisTimestamp(v, format = 'number', precision = 2) {
+  if (!Number.isFinite(v)) return ''
+  const p = Math.max(0, Math.min(6, precision | 0))
+
+  if (format === 'datetime') {
+    const parts = dateParts(v)
+    if (!parts) return v.toFixed(p)
+    return `${parts.ymd}\n${parts.hms}${frac(v, p)}`
+  }
+
+  if (format === 'time') {
+    const parts = dateParts(v)
+    if (!parts) return v.toFixed(p)
+    return parts.hms + frac(v, p)
+  }
+
+  return formatTimestamp(v, format, p)
 }

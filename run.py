@@ -25,6 +25,7 @@ import subprocess
 import sys
 import venv
 from pathlib import Path
+from typing import NoReturn
 
 ROOT = Path(__file__).resolve().parent
 BACKEND = ROOT / "backend"
@@ -45,7 +46,7 @@ def info(msg: str) -> None:
     print(f"{prefix} {msg}", flush=True)
 
 
-def fail(msg: str) -> "NoReturn":  # type: ignore[name-defined]
+def fail(msg: str) -> NoReturn:
     text = f"\033[31m✗ {msg}\033[0m" if COLOR else f"✗ {msg}"
     print(text, file=sys.stderr, flush=True)
     sys.exit(1)

@@ -7,8 +7,7 @@ const STORAGE_KEY = 'vitplotter-theme'
 function initialTheme() {
   const stored = localStorage.getItem(STORAGE_KEY)
   if (stored === 'light' || stored === 'dark') return stored
-  const prefersDark =
-    window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+  const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
   return prefersDark ? 'dark' : 'light'
 }
 

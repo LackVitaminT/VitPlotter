@@ -36,14 +36,16 @@ function onChange(e) {
     @dragleave.prevent="isDragging = false"
     @drop.prevent="onDrop"
   >
-    <input
-      ref="inputEl"
-      type="file"
-      accept=".csv,text/csv"
-      hidden
-      @change="onChange"
-    />
-    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <input ref="inputEl" type="file" accept=".csv,text/csv" hidden @change="onChange" />
+    <svg
+      class="icon"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.5"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
       <path d="M3 15l4-4 4 3 5-6 5 5" />
       <path d="M3 20h18" />
     </svg>
@@ -68,7 +70,10 @@ function onChange(e) {
   padding: 56px 32px;
   text-align: center;
   cursor: pointer;
-  transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+  transition:
+    border-color 0.18s ease,
+    background 0.18s ease,
+    transform 0.18s ease;
   user-select: none;
 }
 .dropzone:hover {

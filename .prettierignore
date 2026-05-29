@@ -1,0 +1,8 @@
+backend/.venv/
+frontend/dist/
+frontend/node_modules/
+
+.cache/
+.ruff_cache/
+coverage/
+htmlcov/

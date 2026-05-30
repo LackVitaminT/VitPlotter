@@ -70,6 +70,8 @@ export function useSubplots() {
       id,
       layout: { x: 0, y: 0, w: 6, h: 6, i: id },
       visible: reactive(new Set()),
+      // Per-subplot axis settings: Y mode/range and X format/resolution are independent per plot.
+      axes: reactive({ yMode: 'auto', yMin: 0, yMax: 1, xFormat: 'number', xPrecision: 2 }),
     })
     relayout()
     if (focusIt) focusedId.value = id
@@ -124,6 +126,11 @@ export function useSubplots() {
   function addSeries(indices, id) {
     setSeries(indices, true, id) // append (drop-to-plot)
   }
+  // Update the focused (or given) subplot's axis settings. Patch is a partial of `axes`.
+  function setAxes(patch, id = focusedId.value) {
+    const sp = find(id)
+    if (sp) Object.assign(sp.axes, patch)
+  }
   function selectAll(allIndices, id = focusedId.value) {
     const sp = find(id)
     if (sp) sp.visible = new Set(allIndices)
@@ -131,6 +138,26 @@ export function useSubplots() {
   function selectNone(id = focusedId.value) {
     const sp = find(id)
     if (sp) sp.visible = new Set()
+  }
+
+  // Keep visibility correct when the series list changes order/length (UDP adding channels, or
+  // filter overlays being added/removed). Translate every subplot's visible indices through the
+  // old→new name lists by NAME, so the right curves stay checked regardless of index shifts.
+  function remapVisibleByName(oldNames, newNames) {
+    if (!oldNames || !newNames) return
+    const newIndexOf = new Map()
+    newNames.forEach((name, i) => {
+      if (!newIndexOf.has(name)) newIndexOf.set(name, i)
+    })
+    for (const sp of subplots.value) {
+      const next = new Set()
+      for (const idx of sp.visible) {
+        const name = oldNames[idx]
+        const ni = name != null ? newIndexOf.get(name) : undefined
+        if (ni != null) next.add(ni)
+      }
+      sp.visible = next
+    }
   }
 
   // Back to a single empty focused plot (used on reset / new data source).
@@ -181,8 +208,10 @@ export function useSubplots() {
     toggleSeries,
     setSeries,
     addSeries,
+    setAxes,
     selectAll,
     selectNone,
+    remapVisibleByName,
     clearAll,
     applyLayout,
     relayout,

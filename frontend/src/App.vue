@@ -3,18 +3,27 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import FileDropZone from './components/FileDropZone.vue'
 import StreamConnect from './components/StreamConnect.vue'
 import SeriesSelector from './components/SeriesSelector.vue'
+import AnalysisPanel from './components/AnalysisPanel.vue'
+import AnalysisDock from './components/AnalysisDock.vue'
 import PlotControls from './components/PlotControls.vue'
 import SubplotGrid from './components/SubplotGrid.vue'
 import TimeBar from './components/TimeBar.vue'
 import Typewriter from './components/Typewriter.vue'
+import ChangelogModal from './components/ChangelogModal.vue'
 import { uploadCsv } from './api.js'
 import { useUdpStream } from './stream.js'
 import { useSubplots } from './subplots.js'
+import { useAnalysis } from './analysis.js'
 import { theme, toggleTheme } from './theme.js'
 import { randomWelcomeTagline } from './taglines.js'
 
 // Update this to your repository URL.
 const GITHUB_URL = 'https://github.com/LackVitaminT/VitPlotter'
+const AUTHOR = 'LackVitaminT'
+const LICENSE = 'MIT'
+// Baked at build time by run.py (VITE_APP_VERSION); 'dev' for a bare `npm run build`.
+const APP_VERSION = import.meta.env.VITE_APP_VERSION || 'dev'
+const showChangelog = ref(false)
 
 const welcomeTab = ref('csv') // csv | udp (which connector the welcome screen shows)
 const welcomeTagline = ref(randomWelcomeTagline())
@@ -27,24 +36,31 @@ const error = ref('')
 const stream = useUdpStream()
 const sp = useSubplots() // subplots: grid of plot frames, each with its own visible-set
 
+// Source feeding the chart (base series only), before analysis derived curves are appended.
+const baseData = computed(() => (source.value === 'udp' ? stream.chartData.value : parsed.value))
+const isLive = computed(() => source.value === 'udp')
+const analysis = useAnalysis(baseData, isLive) // filters (overlay curves) + spectral analyses
+
 // The focused subplot's visible-set drives the sidebar selector.
 const focusedVisible = computed(() => {
   const f = sp.find(sp.focusedId.value)
   return f ? f.visible : new Set()
 })
 
-// Y-axis control (applies to both CSV and live).
-const yMode = ref('auto') // 'auto' | 'fixed'
-const yMin = ref(0)
-const yMax = ref(1)
-
-// X-axis (bottom timestamp) display.
-const xFormat = ref('number') // number | elapsed | time | datetime
-const xPrecision = ref(2) // fractional digits / resolution
+// Axis settings are per-subplot (Y mode/range, X format/resolution). The top controls row and the
+// bottom time bar reflect — and edit — the FOCUSED subplot. Switching focus shows that plot's axes.
+const AXIS_DEFAULTS = { yMode: 'auto', yMin: 0, yMax: 1, xFormat: 'number', xPrecision: 2 }
+const focusedAxes = computed(() => {
+  const f = sp.find(sp.focusedId.value)
+  return f ? f.axes : AXIS_DEFAULTS
+})
+function setFocusedAxis(patch) {
+  sp.setAxes(patch)
+}
 const displayPoints = ref(500) // latest N samples shown live (history buffer is separate)
 
-// Per-frame data feeding the chart.
-const activeData = computed(() => (source.value === 'udp' ? stream.chartData.value : parsed.value))
+// Per-frame data feeding the chart: base series + analysis-derived filter overlay curves.
+const activeData = computed(() => analysis.analyzedData.value ?? null)
 const hasData = computed(() => source.value !== null)
 
 watch(hasData, (hasCurrentData, hadData) => {
@@ -69,12 +85,30 @@ function xBounds(data) {
   return [min, max]
 }
 
-// Stable series list for the sidebar tree — does NOT change every animation frame, so the
-// tree only re-renders when the set of names changes.
-const seriesForSelector = computed(() => {
-  if (source.value === 'udp') return stream.seriesNames.value.map((name) => ({ name }))
-  return parsed.value?.series ?? []
-})
+// Stable series list for the sidebar tree — does NOT change every animation frame, so the tree
+// only re-renders when the set of names changes. Base channels first, then analysis filter
+// overlays (their labels are stable until the filter set/params change).
+const baseNames = computed(() =>
+  source.value === 'udp'
+    ? stream.seriesNames.value
+    : (parsed.value?.series ?? []).map((s) => s.name),
+)
+const seriesForSelector = computed(() =>
+  [...baseNames.value, ...analysis.derivedNames.value].map((name) => ({ name })),
+)
+
+// Keep each subplot's visible-set pointing at the right curves as the series list changes order or
+// length (UDP adding channels, or filter overlays being added/removed) — remap by name.
+let prevSeriesNames = []
+watch(
+  seriesForSelector,
+  (cur) => {
+    const names = cur.map((s) => s.name)
+    sp.remapVisibleByName(prevSeriesNames, names)
+    prevSeriesNames = names
+  },
+  { immediate: true },
+)
 
 // --- CSV ------------------------------------------------------------------ //
 async function handleFile(file) {
@@ -84,6 +118,7 @@ async function handleFile(file) {
   try {
     const data = await uploadCsv(file)
     parsed.value = data
+    analysis.clear() // filters/analyses reference the previous source's series by name
     sp.clearAll() // fresh single empty focused plot
     source.value = 'csv'
   } catch (e) {
@@ -100,6 +135,7 @@ async function handleConnect({ host, port, timestampField }) {
   xView.value = null
   await stream.start(host, port, timestampField)
   if (stream.status.value === 'connected' || stream.status.value === 'connecting') {
+    analysis.clear()
     sp.clearAll() // fresh single empty focused plot (new series appear unchecked)
     source.value = 'udp'
   }
@@ -112,11 +148,13 @@ function toggle(i) {
 function toggleGroup({ indices, value }) {
   sp.setSeries(indices, value)
 }
-function selectAll() {
-  sp.selectAll(seriesForSelector.value.map((_, i) => i))
+// All / None act on the indices the selector reports — the search matches while filtering,
+// otherwise every series.
+function selectAll(indices) {
+  sp.setSeries(indices, true)
 }
-function selectNone() {
-  sp.selectNone()
+function selectNone(indices) {
+  sp.setSeries(indices, false)
 }
 
 // --- subplot grid events -------------------------------------------------- //
@@ -160,9 +198,56 @@ function resetSidebar() {
   sidebarWidth.value = SIDEBAR_DEFAULT
   localStorage.setItem(STORE_KEY, String(SIDEBAR_DEFAULT))
 }
+
+// --- resizable Series / Analysis split (vertical, inside the sidebar) ------ //
+const SERIES_RATIO_KEY = 'vitplotter-series-ratio'
+const SERIES_RATIO_DEFAULT = 0.6 // Series : Analysis = 6 : 4
+const SERIES_RATIO_MIN = 0.2
+const SERIES_RATIO_MAX = 0.85
+
+function clampRatio(r) {
+  return Math.min(SERIES_RATIO_MAX, Math.max(SERIES_RATIO_MIN, r))
+}
+const sidebarEl = ref(null)
+const storedRatio = Number(localStorage.getItem(SERIES_RATIO_KEY))
+const seriesRatio = ref(
+  Number.isFinite(storedRatio) && storedRatio > 0 ? clampRatio(storedRatio) : SERIES_RATIO_DEFAULT,
+)
+
+let paneDrag = null
+function onPaneSplitterDown(e) {
+  const host = sidebarEl.value
+  if (!host) return
+  paneDrag = { startY: e.clientY, startRatio: seriesRatio.value, height: host.clientHeight }
+  document.body.style.userSelect = 'none'
+  document.body.style.cursor = 'row-resize'
+  window.addEventListener('mousemove', onPaneSplitterMove)
+  window.addEventListener('mouseup', onPaneSplitterUp)
+}
+function onPaneSplitterMove(e) {
+  if (!paneDrag || paneDrag.height <= 0) return
+  seriesRatio.value = clampRatio(
+    paneDrag.startRatio + (e.clientY - paneDrag.startY) / paneDrag.height,
+  )
+}
+function onPaneSplitterUp() {
+  paneDrag = null
+  document.body.style.userSelect = ''
+  document.body.style.cursor = ''
+  localStorage.setItem(SERIES_RATIO_KEY, String(seriesRatio.value))
+  window.removeEventListener('mousemove', onPaneSplitterMove)
+  window.removeEventListener('mouseup', onPaneSplitterUp)
+}
+function resetPaneSplit() {
+  seriesRatio.value = SERIES_RATIO_DEFAULT
+  localStorage.setItem(SERIES_RATIO_KEY, String(SERIES_RATIO_DEFAULT))
+}
+
 onBeforeUnmount(() => {
   window.removeEventListener('mousemove', onSplitterMove)
   window.removeEventListener('mouseup', onSplitterUp)
+  window.removeEventListener('mousemove', onPaneSplitterMove)
+  window.removeEventListener('mouseup', onPaneSplitterUp)
 })
 
 // --- pause / time scrubber (drives every subplot) ------------------------- //
@@ -194,6 +279,7 @@ function reset() {
   xView.value = null
   source.value = null
   parsed.value = null
+  analysis.clear()
   sp.clearAll()
   error.value = ''
 }
@@ -293,19 +379,63 @@ function reset() {
 
         <p v-if="welcomeTab === 'csv' && error" class="error">{{ error }}</p>
       </div>
+
+      <footer class="welcome-foot">
+        <div class="foot-links">
+          <a class="gh-link" :href="GITHUB_URL" target="_blank" rel="noopener noreferrer">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path
+                d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49 0-.24-.01-.87-.01-1.71-2.78.62-3.37-1.37-3.37-1.37-.45-1.18-1.11-1.49-1.11-1.49-.91-.64.07-.62.07-.62 1 .07 1.53 1.06 1.53 1.06.89 1.56 2.34 1.11 2.91.85.09-.66.35-1.11.63-1.37-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.27 2.75 1.05a9.36 9.36 0 0 1 2.5-.34c.85 0 1.71.12 2.5.34 1.91-1.32 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.81-4.57 5.06.36.32.68.94.68 1.9 0 1.37-.01 2.48-.01 2.82 0 .27.18.6.69.49A10.02 10.02 0 0 0 22 12.25C22 6.58 17.52 2 12 2z"
+              />
+            </svg>
+            {{ AUTHOR }}
+          </a>
+          <span class="dot-sep" aria-hidden="true">·</span>
+          <button class="link-btn" type="button" @click="showChangelog = true">Changelog</button>
+        </div>
+        <p class="watermark">VitPlotter v{{ APP_VERSION }} · {{ LICENSE }} License</p>
+      </footer>
     </main>
 
     <!-- Loaded: series sidebar + chart -->
     <main v-else class="workspace">
-      <aside class="sidebar" :style="{ flex: `0 0 ${sidebarWidth}px`, width: sidebarWidth + 'px' }">
-        <SeriesSelector
-          :series="seriesForSelector"
-          :visible="focusedVisible"
-          @toggle="toggle"
-          @toggleGroup="toggleGroup"
-          @all="selectAll"
-          @none="selectNone"
-        />
+      <aside
+        ref="sidebarEl"
+        class="sidebar"
+        :style="{ flex: `0 0 ${sidebarWidth}px`, width: sidebarWidth + 'px' }"
+      >
+        <div class="series-pane" :style="{ flex: `${seriesRatio} 1 0` }">
+          <SeriesSelector
+            :series="seriesForSelector"
+            :visible="focusedVisible"
+            @toggle="toggle"
+            @toggleGroup="toggleGroup"
+            @all="selectAll"
+            @none="selectNone"
+          />
+        </div>
+        <div
+          class="pane-splitter"
+          title="Drag to resize · double-click to reset to 6:4"
+          @mousedown="onPaneSplitterDown"
+          @dblclick="resetPaneSplit"
+        ></div>
+        <div class="analysis-pane" :style="{ flex: `${1 - seriesRatio} 1 0` }">
+          <AnalysisPanel
+            :filters="analysis.filters.value"
+            :analyses="analysis.analyses.value"
+            :sourceNames="baseNames"
+            :baseCount="baseNames.length"
+            :visible="focusedVisible"
+            @toggle="toggle"
+            @add-filter="analysis.addFilter"
+            @update-filter="analysis.updateFilter"
+            @remove-filter="analysis.removeFilter"
+            @add-analysis="analysis.addAnalysis"
+            @update-analysis="analysis.updateAnalysis"
+            @remove-analysis="analysis.removeAnalysis"
+          />
+        </div>
       </aside>
       <div
         class="splitter"
@@ -316,14 +446,19 @@ function reset() {
       <section class="chart-area">
         <div class="controls-row">
           <PlotControls
-            v-model:yMode="yMode"
-            v-model:yMin="yMin"
-            v-model:yMax="yMax"
-            v-model:xFormat="xFormat"
-            v-model:xPrecision="xPrecision"
+            :yMode="focusedAxes.yMode"
+            :yMin="focusedAxes.yMin"
+            :yMax="focusedAxes.yMax"
+            :xFormat="focusedAxes.xFormat"
+            :xPrecision="focusedAxes.xPrecision"
             v-model:displayPoints="displayPoints"
             :live="source === 'udp'"
             :maxPoints="stream.maxPoints.value"
+            @update:yMode="setFocusedAxis({ yMode: $event })"
+            @update:yMin="setFocusedAxis({ yMin: $event })"
+            @update:yMax="setFocusedAxis({ yMax: $event })"
+            @update:xFormat="setFocusedAxis({ xFormat: $event })"
+            @update:xPrecision="setFocusedAxis({ xPrecision: $event })"
             @update:maxPoints="stream.maxPoints.value = $event"
             @reset-display="resetDisplayView"
           />
@@ -388,21 +523,23 @@ function reset() {
             :colNum="sp.colNum"
             :parsed="activeData"
             :live="source === 'udp'"
-            :yMode="yMode"
-            :yMin="yMin"
-            :yMax="yMax"
-            :xFormat="xFormat"
-            :xPrecision="xPrecision"
             :gaps="source === 'udp' ? stream.gaps.value : null"
             :displayPoints="displayPoints"
             @focus="sp.focus($event)"
             @close="sp.removeSubplot($event)"
+            @clear-series="sp.selectNone($event)"
             @toggle-maximize="sp.toggleMaximize($event)"
             @series-drop="onSeriesDrop"
             @layout-updated="sp.applyLayout($event)"
             @view-change="xView = $event"
           />
         </div>
+        <AnalysisDock
+          v-if="analysis.analyses.value.length"
+          class="analysis-dock"
+          :results="analysis.spectrumResults.value"
+          @remove="analysis.removeAnalysis"
+        />
         <div v-if="source === 'csv' || source === 'udp'" class="timebar-row">
           <button
             v-if="source === 'udp'"
@@ -428,13 +565,15 @@ function reset() {
             :extent="bufExtent"
             :view="xView ?? bufExtent"
             :disabled="!bufExtent"
-            :xFormat="xFormat"
-            :xPrecision="xPrecision"
+            :xFormat="focusedAxes.xFormat"
+            :xPrecision="focusedAxes.xPrecision"
             @update:view="onScrub"
           />
         </div>
       </section>
     </main>
+
+    <ChangelogModal v-if="showChangelog" :version="APP_VERSION" @close="showChangelog = false" />
   </div>
 </template>
 
@@ -564,6 +703,7 @@ function reset() {
 }
 
 .welcome {
+  position: relative;
   flex: 1;
   display: flex;
   align-items: center;
@@ -574,6 +714,70 @@ function reset() {
   width: 100%;
   max-width: 560px;
   text-align: center;
+}
+.welcome-foot {
+  position: absolute;
+  bottom: 20px;
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.foot-links {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+.gh-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  text-decoration: none;
+  font-weight: 600;
+  padding: 3px 6px;
+  border-radius: 7px;
+  transition:
+    color 0.15s ease,
+    background 0.15s ease;
+}
+.gh-link:hover {
+  color: var(--text);
+  background: var(--bg-elev);
+}
+.gh-link svg {
+  width: 16px;
+  height: 16px;
+}
+.dot-sep {
+  color: var(--text-dim);
+}
+.link-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 3px 6px;
+  border-radius: 7px;
+  transition:
+    color 0.15s ease,
+    background 0.15s ease;
+}
+.link-btn:hover {
+  color: var(--accent);
+  background: var(--bg-elev);
+}
+.watermark {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-dim);
+  letter-spacing: 0.02em;
 }
 .hero {
   margin: 0 0 8px;
@@ -626,6 +830,38 @@ function reset() {
   padding: 18px 16px;
   background: var(--bg-elev);
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+/* Series tree and Analysis panel share the sidebar height via a draggable split (default 6:4);
+   each scrolls independently. flex-grow comes from `seriesRatio` (inline style). */
+.series-pane {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.analysis-pane {
+  min-height: 0;
+  overflow-y: auto;
+}
+.pane-splitter {
+  flex: 0 0 6px;
+  margin: 6px 0;
+  cursor: row-resize;
+  background: var(--border);
+  border-radius: 3px;
+  position: relative;
+}
+.pane-splitter::after {
+  /* widen the hit area without taking layout space */
+  content: '';
+  position: absolute;
+  inset: -4px 0;
+}
+.pane-splitter:hover,
+.pane-splitter:active {
+  background: var(--accent);
 }
 .splitter {
   flex: 0 0 6px;
@@ -723,6 +959,10 @@ function reset() {
   flex: 1;
   min-height: 0;
   position: relative;
+}
+.analysis-dock {
+  flex: 0 0 auto;
+  margin-top: 12px;
 }
 .timebar-row {
   flex: 0 0 auto;

@@ -1,3 +1,54 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "VitPlotter"
+dynamic = ["version"]
+description = "A minimal web-based plotting tool with CSV upload and live UDP streaming."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "VitPlotter contributors" }]
+keywords = ["plotting", "udp", "fastapi", "vue", "uplot"]
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",
+  "pandas>=2.0",
+  "python-multipart>=0.0.9",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Web Environment",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Visualization",
+  "Topic :: Internet :: WWW/HTTP :: WSGI :: Application",
+]
+
+[project.scripts]
+VitPlotter = "vitplotter.cli:main"
+vitplotter = "vitplotter.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+packages = ["vitplotter", "vitplotter.app"]
+
+[tool.setuptools.package-dir]
+vitplotter = "vitplotter"
+"vitplotter.app" = "backend/app"
+
+[tool.setuptools.package-data]
+vitplotter = ["frontend-dist/*", "frontend-dist/assets/*", "frontend-dist/assets/**/*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "vitplotter.__version__" }
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"

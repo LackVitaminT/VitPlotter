@@ -31,7 +31,7 @@ const emit = defineEmits(['view-change', 'follow-change'])
 
 const HOVER_PROX = 16
 const MENU_WIDTH = 190
-const MENU_HEIGHT = 126
+const MENU_HEIGHT = 170
 const JPG_QUALITY = 0.92
 
 // Trailing-window state. `following` = the view's right edge is at the latest sample,
@@ -118,6 +118,12 @@ function updateMarkers(u = plot) {
 
 const hoverTip = ref(null)
 const screenshotFormat = ref('png') // png | jpg
+// Screenshot background: 'opaque' paints the current theme background behind the chart;
+// 'transparent' keeps the alpha channel (PNG only — JPG has no alpha, so it's always opaque).
+const screenshotBg = ref('opaque')
+const effectiveBg = computed(() =>
+  screenshotFormat.value === 'jpg' ? 'opaque' : screenshotBg.value,
+)
 const screenshotStatus = ref('')
 const screenshotBusy = ref(false)
 const contextMenu = ref({ open: false, left: 0, top: 0 })
@@ -235,7 +241,13 @@ function plotCanvas() {
 }
 
 function resolvedBackground() {
-  const nodes = [hostEl.value, hostEl.value?.closest('.chart-area'), document.body]
+  // Nearest themed background behind the chart: the plot frame, then the chart area, then body.
+  const nodes = [
+    hostEl.value,
+    hostEl.value?.closest('.frame'),
+    hostEl.value?.closest('.chart-area'),
+    document.body,
+  ]
   for (const node of nodes) {
     if (!node) continue
     const color = getComputedStyle(node).backgroundColor
@@ -264,21 +276,97 @@ function canvasToBlob(canvas, type, quality) {
   })
 }
 
+function readThemeVar(name, fallback) {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+  return v || fallback
+}
+
+// Compose the export canvas: the chart, then a footer with the (visible) legend and the capture
+// timestamp — all sized to the chart's device-pixel ratio and painted in the current theme colors.
+function buildScreenshotCanvas(source, opaque) {
+  const dpr = Math.max(1, source.clientWidth ? source.width / source.clientWidth : 1)
+  const pad = Math.round(10 * dpr)
+  const fontPx = Math.round(12 * dpr)
+  const lineH = Math.round(18 * dpr)
+  const chip = Math.round(10 * dpr)
+  const colGap = Math.round(16 * dpr)
+  const chipGap = Math.round(6 * dpr)
+  const width = source.width
+  const font = `${fontPx}px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif`
+
+  // Lay the legend items out into rows that fit the chart width.
+  const probe = document.createElement('canvas').getContext('2d')
+  probe.font = font
+  const maxW = Math.max(1, width - pad * 2)
+  const rows = [[]]
+  let rowW = 0
+  for (const it of legendItems.value) {
+    const w = chip + chipGap + probe.measureText(it.name).width
+    const extra = (rows[rows.length - 1].length ? colGap : 0) + w
+    if (rowW + extra > maxW && rows[rows.length - 1].length) {
+      rows.push([])
+      rowW = 0
+    }
+    rows[rows.length - 1].push({ name: it.name, color: it.color, w })
+    rowW += (rows[rows.length - 1].length > 1 ? colGap : 0) + w
+  }
+  const legendH = legendItems.value.length ? rows.length * lineH : 0
+  const footerH = pad + legendH + lineH + pad // legend rows + one timestamp line
+
+  const out = document.createElement('canvas')
+  out.width = width
+  out.height = source.height + footerH
+  const ctx = out.getContext('2d')
+  if (!ctx) throw new Error('Could not create screenshot')
+  if (opaque) {
+    ctx.fillStyle = resolvedBackground()
+    ctx.fillRect(0, 0, out.width, out.height)
+  }
+  ctx.drawImage(source, 0, 0)
+
+  // Separator under the chart.
+  const lw = Math.max(1, Math.round(dpr))
+  ctx.strokeStyle = readThemeVar('--border', 'rgba(128, 128, 128, 0.25)')
+  ctx.lineWidth = lw
+  ctx.beginPath()
+  ctx.moveTo(pad, source.height + lw / 2)
+  ctx.lineTo(width - pad, source.height + lw / 2)
+  ctx.stroke()
+
+  ctx.font = font
+  ctx.textBaseline = 'middle'
+  const textColor = readThemeVar('--text', '#333')
+  let y = source.height + pad + lineH / 2
+  for (const row of rows) {
+    let x = pad
+    ctx.textAlign = 'left'
+    for (const it of row) {
+      ctx.fillStyle = it.color
+      ctx.fillRect(x, Math.round(y - chip / 2), chip, chip)
+      ctx.fillStyle = textColor
+      ctx.fillText(it.name, x + chip + chipGap, y)
+      x += it.w + colGap
+    }
+    y += lineH
+  }
+
+  // Capture timestamp, right-aligned on its own line below the legend.
+  ctx.fillStyle = readThemeVar('--text-muted', '#888')
+  ctx.textAlign = 'right'
+  ctx.fillText(new Date().toLocaleString(), width - pad, source.height + pad + legendH + lineH / 2)
+  ctx.textAlign = 'left'
+
+  return out
+}
+
 async function makeScreenshotBlob(format = screenshotFormat.value) {
   const source = plotCanvas()
   if (!source) throw new Error('Plot canvas is not ready')
 
   const type = format === 'jpg' ? 'image/jpeg' : 'image/png'
-  const out = document.createElement('canvas')
-  out.width = source.width
-  out.height = source.height
-  const ctx = out.getContext('2d')
-  if (!ctx) throw new Error('Could not create screenshot')
-  if (format === 'jpg') {
-    ctx.fillStyle = resolvedBackground()
-    ctx.fillRect(0, 0, out.width, out.height)
-  }
-  ctx.drawImage(source, 0, 0)
+  // JPG can't be transparent, so it's always opaque.
+  const opaque = format === 'jpg' || screenshotBg.value === 'opaque'
+  const out = buildScreenshotCanvas(source, opaque)
   return canvasToBlob(out, type, format === 'jpg' ? JPG_QUALITY : undefined)
 }
 
@@ -750,6 +838,25 @@ watch(
             JPG
           </button>
         </div>
+        <div class="format-switch bg-row" role="group" aria-label="Screenshot background">
+          <button
+            type="button"
+            :class="{ active: effectiveBg === 'transparent' }"
+            :disabled="screenshotFormat === 'jpg'"
+            title="Keep a transparent background (PNG only)"
+            @click="screenshotBg = 'transparent'"
+          >
+            Transparent
+          </button>
+          <button
+            type="button"
+            :class="{ active: effectiveBg === 'opaque' }"
+            title="Paint the current theme background"
+            @click="screenshotBg = 'opaque'"
+          >
+            Opaque
+          </button>
+        </div>
         <div class="menu-actions">
           <button type="button" :disabled="screenshotBusy" @click="copyScreenshot">Copy</button>
           <button type="button" :disabled="screenshotBusy" @click="downloadScreenshot">
@@ -880,6 +987,7 @@ watch(
   grid-template-columns: 1fr 1fr;
   gap: 6px;
 }
+.bg-row,
 .menu-actions {
   margin-top: 7px;
 }
@@ -904,6 +1012,11 @@ watch(
 .plot-menu button:disabled {
   opacity: 0.55;
   cursor: wait;
+}
+/* The Transparent toggle is disabled (not busy) when JPG is selected. */
+.format-switch button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .menu-status {
   margin-top: 7px;

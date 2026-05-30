@@ -9,14 +9,10 @@ const props = defineProps({
   focusedId: { type: String, default: null },
   maximizedId: { type: String, default: null },
   colNum: { type: Number, default: 12 },
-  // Global chart props, applied to every subplot.
+  // Shared chart props applied to every subplot. Axis settings (Y mode/range, X format/resolution)
+  // are NOT here — they live per-subplot on `sp.axes`.
   parsed: { type: Object, required: true },
   live: { type: Boolean, default: false },
-  yMode: { type: String, default: 'auto' },
-  yMin: { type: Number, default: 0 },
-  yMax: { type: Number, default: 1 },
-  xFormat: { type: String, default: 'number' },
-  xPrecision: { type: Number, default: 2 },
   gaps: { type: Array, default: null },
   displayPoints: { type: Number, default: 0 },
 })
@@ -24,6 +20,7 @@ const props = defineProps({
 const emit = defineEmits([
   'focus',
   'close',
+  'clear-series',
   'toggle-maximize',
   'series-drop',
   'layout-updated',
@@ -502,6 +499,26 @@ function onFrameDrop(e, id) {
             </button>
             <button
               class="frame-btn"
+              title="Clear all series from this plot"
+              :disabled="!sp.visible.size"
+              @pointerdown.stop
+              @click.stop="emit('clear-series', sp.id)"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M3 21h18" />
+                <path d="M8 21l-4.5-4.5 9-9 4.5 4.5-9 9z" />
+                <path d="M12.5 7.5l4 4" />
+              </svg>
+            </button>
+            <button
+              class="frame-btn"
               title="Close"
               @pointerdown.stop
               @click.stop="emit('close', sp.id)"
@@ -530,11 +547,11 @@ function onFrameDrop(e, id) {
               :parsed="parsed"
               :visible="sp.visible"
               :live="live"
-              :yMode="yMode"
-              :yMin="yMin"
-              :yMax="yMax"
-              :xFormat="xFormat"
-              :xPrecision="xPrecision"
+              :yMode="sp.axes.yMode"
+              :yMin="sp.axes.yMin"
+              :yMax="sp.axes.yMax"
+              :xFormat="sp.axes.xFormat"
+              :xPrecision="sp.axes.xPrecision"
               :gaps="gaps"
               :displayPoints="displayPoints"
               @view-change="onChildView(sp.id, $event)"
@@ -677,9 +694,13 @@ function onFrameDrop(e, id) {
   color: var(--text-muted);
   cursor: pointer;
 }
-.frame-btn:hover {
+.frame-btn:hover:not(:disabled) {
   background: var(--surface);
   color: var(--text);
+}
+.frame-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 .frame-btn svg {
   width: 13px;

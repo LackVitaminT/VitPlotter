@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36">
+  <style>
+    :root {
+      --wave: #8839ef;
+      --grid: #8c8fa1;
+      --node: #04a5e5;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --wave: #cba6f7;
+        --grid: #7f849c;
+        --node: #89dceb;
+      }
+    }
+  </style>
+  <path
+    d="M10 7v22M7 26h23"
+    fill="none"
+    stroke="var(--grid)"
+    stroke-width="1.6"
+    stroke-linecap="round"
+    opacity="0.7"
+  />
+  <path
+    d="M8 14.5l6 6.5 5.5-12 8.5 16"
+    fill="none"
+    stroke="var(--wave)"
+    stroke-width="3"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <circle cx="8" cy="14.5" r="2.4" fill="var(--node)" />
+  <circle cx="19.5" cy="9" r="2.4" fill="var(--node)" />
+  <circle cx="28" cy="25" r="2.4" fill="var(--node)" />
+</svg>

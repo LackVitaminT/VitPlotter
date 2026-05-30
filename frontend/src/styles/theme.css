@@ -12,6 +12,8 @@
   --text-dim: #8c8fa1; /* overlay1 */
   --accent: #8839ef; /* mauve */
   --accent-contrast: #ffffff;
+  --ok: #40a02b; /* green */
+  --warn: #df8e1d; /* yellow */
   --danger: #d20f39; /* red */
   --shadow: 0 1px 3px rgba(76, 79, 105, 0.08), 0 8px 24px rgba(76, 79, 105, 0.06);
 }

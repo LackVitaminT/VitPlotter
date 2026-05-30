@@ -1,5 +1,5 @@
 <script setup>
-import { computed, reactive, watchEffect } from 'vue'
+import { computed, reactive, ref, watchEffect } from 'vue'
 import { colorFor } from '../palette.js'
 import { theme } from '../theme.js'
 import { setDragData } from '../dnd.js'
@@ -20,6 +20,34 @@ const vIndeterminate = {
 }
 
 const collapsed = reactive(new Set()) // group paths that are collapsed
+const query = ref('') // fuzzy search filter
+
+// Subsequence fuzzy match: every char of the query appears in order in the text (case-insensitive).
+function fuzzyMatch(q, text) {
+  const t = text.toLowerCase()
+  let qi = 0
+  for (let ti = 0; ti < t.length && qi < q.length; ti++) {
+    if (t[ti] === q[qi]) qi++
+  }
+  return qi === q.length
+}
+
+// Indices of series matching the current query (null = no filter, show everything).
+const matched = computed(() => {
+  const q = query.value.trim().toLowerCase()
+  if (!q) return null
+  const set = new Set()
+  props.series.forEach((s, i) => {
+    if (fuzzyMatch(q, String(s.name))) set.add(i)
+  })
+  return set
+})
+const searching = computed(() => matched.value != null)
+
+// What All / None act on: the search matches while filtering, otherwise every series.
+const shownIndices = computed(() =>
+  matched.value ? [...matched.value] : props.series.map((_, i) => i),
+)
 
 // Split a series name into hierarchy segments. Both '.' and '/' are treated as separators
 // (e.g. "imu.ax" and "vehicle/speed/x" both nest); empty segments (leading '/') are dropped.
@@ -29,9 +57,11 @@ function splitName(name) {
 }
 
 // Build a tree from the series names. A node is a group when it has children, else a leaf.
+// While searching, only matching series are inserted, so the tree narrows to the results.
 const tree = computed(() => {
   const root = { children: new Map() }
   props.series.forEach((s, index) => {
+    if (matched.value && !matched.value.has(index)) return
     const parts = splitName(s.name)
     let node = root
     let path = ''
@@ -80,13 +110,15 @@ function subtreeLeaves(node, acc) {
 // Flatten the tree into ordered rows, honoring the collapsed set.
 const rows = computed(() => {
   const out = []
+  const expand = searching.value // force every group open while filtering
   const walk = (node, depth) => {
     for (const child of node.children.values()) {
       if (child.children.size > 0) {
         const leafIndices = subtreeLeaves(child, [])
-        out.push({ kind: 'group', path: child.path, label: child.label, depth, leafIndices })
+        const open = expand || !collapsed.has(child.path)
+        out.push({ kind: 'group', path: child.path, label: child.label, depth, leafIndices, open })
         // A node that is both a value and a parent: show its own value as the first leaf.
-        if (!collapsed.has(child.path)) {
+        if (open) {
           if (child.leafIndex != null) {
             out.push({
               kind: 'leaf',
@@ -145,11 +177,36 @@ function onDragEnd(e) {
       <span class="label">Series</span>
       <span class="count">{{ visible.size }}/{{ series.length }}</span>
     </div>
+    <div class="search">
+      <svg
+        class="search-icon"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+      >
+        <circle cx="11" cy="11" r="7" />
+        <path d="M21 21l-4.3-4.3" stroke-linecap="round" />
+      </svg>
+      <input v-model="query" class="search-input" type="text" placeholder="Search series…" />
+      <button v-if="query" class="search-clear" title="Clear" @click="query = ''">×</button>
+    </div>
     <div class="actions">
-      <button @click="emit('all')">All</button>
-      <button @click="emit('none')">None</button>
+      <button
+        :title="searching ? 'Select all matching series' : 'Select all series'"
+        @click="emit('all', shownIndices)"
+      >
+        All
+      </button>
+      <button
+        :title="searching ? 'Clear matching series' : 'Clear all series'"
+        @click="emit('none', shownIndices)"
+      >
+        None
+      </button>
     </div>
     <ul class="tree">
+      <li v-if="searching && !rows.length" class="no-results">No matching series</li>
       <li v-for="row in rows" :key="row.kind + ':' + row.path">
         <!-- Group row -->
         <div
@@ -161,7 +218,7 @@ function onDragEnd(e) {
           @dragstart="onDragStart($event, row.leafIndices, row.label)"
           @dragend="onDragEnd"
         >
-          <span class="chevron">{{ collapsed.has(row.path) ? '▸' : '▾' }}</span>
+          <span class="chevron">{{ row.open ? '▾' : '▸' }}</span>
           <input
             type="checkbox"
             :checked="groupState(row.leafIndices) === 'all'"
@@ -214,6 +271,62 @@ function onDragEnd(e) {
   color: var(--text-muted);
 }
 .count {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin-top: 10px;
+}
+.search-icon {
+  position: absolute;
+  left: 9px;
+  width: 13px;
+  height: 13px;
+  color: var(--text-dim);
+  pointer-events: none;
+}
+.search-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-inset);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 26px 6px 28px;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+}
+.search-input:focus {
+  border-color: var(--accent);
+}
+.search-input::placeholder {
+  color: var(--text-dim);
+}
+.search-clear {
+  position: absolute;
+  right: 6px;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 5px;
+}
+.search-clear:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.no-results {
+  padding: 8px 6px;
   font-size: 12px;
   color: var(--text-dim);
 }

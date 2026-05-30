@@ -12,6 +12,9 @@ Provides:
 
 from __future__ import annotations
 
+import os
+from contextlib import ExitStack
+from importlib import resources
 from pathlib import Path
 
 from fastapi import (
@@ -40,6 +43,40 @@ app.add_middleware(
 )
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB cap to avoid huge files overwhelming the server
+_STATIC_STACK = ExitStack()
+
+
+def _package_dist() -> Path | None:
+    """Return the packaged frontend dist directory if the wheel bundles one."""
+    try:
+        static_ref = resources.files("vitplotter").joinpath("frontend-dist")
+    except (ModuleNotFoundError, AttributeError):  # package not installed yet
+        return None
+    if not static_ref.is_dir():
+        return None
+    try:
+        static_path = _STATIC_STACK.enter_context(resources.as_file(static_ref))
+    except (FileNotFoundError, TypeError):
+        return None
+    path = Path(static_path)
+    return path if (path / "index.html").is_file() else None
+
+
+def _frontend_dist() -> Path | None:
+    env_dist = os.environ.get("VITPLOTTER_DIST_DIR")
+    if env_dist:
+        candidate = Path(env_dist).expanduser()
+        if (candidate / "index.html").is_file():
+            return candidate
+
+    packaged = _package_dist()
+    if packaged is not None:
+        return packaged
+
+    repo_dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+    if (repo_dist / "index.html").is_file():
+        return repo_dist
+    return None
 
 
 @app.get("/api/health")
@@ -120,6 +157,6 @@ async def stream_ws(ws: WebSocket) -> None:
 
 # Production: if the frontend has been built, serve it at the root path
 # (in dev this directory does not exist, so this is skipped).
-_dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
-if _dist.is_dir():
+_dist = _frontend_dist()
+if _dist is not None:
     app.mount("/", StaticFiles(directory=str(_dist), html=True), name="frontend")

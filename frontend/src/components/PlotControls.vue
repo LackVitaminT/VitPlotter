@@ -5,24 +5,21 @@ const props = defineProps({
   yMode: { type: String, default: 'auto' }, // 'auto' | 'fixed'
   yMin: { type: Number, default: 0 },
   yMax: { type: Number, default: 1 },
-  xMode: { type: String, default: 'auto' },
-  xMin: { type: Number, default: 0 },
-  xMax: { type: Number, default: 1 },
   xFormat: { type: String, default: 'number' },
   xPrecision: { type: Number, default: 2 },
   live: { type: Boolean, default: false },
-  maxPoints: { type: Number, default: 2000 },
+  maxPoints: { type: Number, default: 5000 },
+  displayPoints: { type: Number, default: 500 },
 })
 const emit = defineEmits([
   'update:yMode',
   'update:yMin',
   'update:yMax',
-  'update:xMode',
-  'update:xMin',
-  'update:xMax',
   'update:xFormat',
   'update:xPrecision',
   'update:maxPoints',
+  'update:displayPoints',
+  'reset-display',
 ])
 </script>
 
@@ -59,31 +56,6 @@ const emit = defineEmits([
 
     <div class="group">
       <span class="lbl">X axis</span>
-      <div class="segmented">
-        <button :class="{ active: xMode === 'auto' }" @click="emit('update:xMode', 'auto')">
-          Auto
-        </button>
-        <button :class="{ active: xMode === 'fixed' }" @click="emit('update:xMode', 'fixed')">
-          Fixed
-        </button>
-      </div>
-      <input
-        class="num range"
-        type="number"
-        :value="xMin"
-        :disabled="xMode !== 'fixed'"
-        @input="emit('update:xMin', Number($event.target.value))"
-        aria-label="X min"
-      />
-      <span class="dash">–</span>
-      <input
-        class="num range"
-        type="number"
-        :value="xMax"
-        :disabled="xMode !== 'fixed'"
-        @input="emit('update:xMax', Number($event.target.value))"
-        aria-label="X max"
-      />
       <select
         class="sel"
         :value="xFormat"
@@ -111,9 +83,32 @@ const emit = defineEmits([
         min="1"
         :value="maxPoints"
         @input="emit('update:maxPoints', Number($event.target.value))"
-        aria-label="Max history points"
+        aria-label="History buffer points"
+        title="Points kept in the history buffer"
       />
       <span class="unit">pts</span>
+    </div>
+
+    <div class="group">
+      <span class="lbl">Display</span>
+      <input
+        class="num wide"
+        type="number"
+        min="1"
+        :value="displayPoints"
+        @input="emit('update:displayPoints', Number($event.target.value))"
+        aria-label="Displayed latest points"
+        title="Latest points shown in the view"
+      />
+      <span class="unit">pts</span>
+      <button
+        class="reset-btn"
+        type="button"
+        title="Reset to the displayed latest points"
+        @click="emit('reset-display')"
+      >
+        Reset
+      </button>
     </div>
   </div>
 </template>
@@ -209,5 +204,25 @@ const emit = defineEmits([
 .unit {
   font-size: 12px;
   color: var(--text-dim);
+}
+.reset-btn {
+  background: var(--bg-elev);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+.reset-btn:hover {
+  background: var(--surface);
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
 }
 </style>

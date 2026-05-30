@@ -3,13 +3,14 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import FileDropZone from './components/FileDropZone.vue'
 import StreamConnect from './components/StreamConnect.vue'
 import SeriesSelector from './components/SeriesSelector.vue'
-import PlotChart from './components/PlotChart.vue'
 import PlotControls from './components/PlotControls.vue'
+import SubplotGrid from './components/SubplotGrid.vue'
+import TimeBar from './components/TimeBar.vue'
 import Typewriter from './components/Typewriter.vue'
 import { uploadCsv } from './api.js'
 import { useUdpStream } from './stream.js'
+import { useSubplots } from './subplots.js'
 import { theme, toggleTheme } from './theme.js'
-import { getDragData, hasDragData } from './dnd.js'
 import { randomWelcomeTagline } from './taglines.js'
 
 // Update this to your repository URL.
@@ -20,11 +21,17 @@ const welcomeTagline = ref(randomWelcomeTagline())
 const source = ref(null) // null | 'csv' | 'udp' (what currently drives the workspace)
 
 const parsed = ref(null) // CSV result
-const visible = ref(new Set()) // visible series indices; replaced on change for reactivity
 const loading = ref(false)
 const error = ref('')
 
 const stream = useUdpStream()
+const sp = useSubplots() // subplots: grid of plot frames, each with its own visible-set
+
+// The focused subplot's visible-set drives the sidebar selector.
+const focusedVisible = computed(() => {
+  const f = sp.find(sp.focusedId.value)
+  return f ? f.visible : new Set()
+})
 
 // Y-axis control (applies to both CSV and live).
 const yMode = ref('auto') // 'auto' | 'fixed'
@@ -32,13 +39,9 @@ const yMin = ref(0)
 const yMax = ref(1)
 
 // X-axis (bottom timestamp) display.
-const xMode = ref('auto') // 'auto' | 'fixed'
-const xMin = ref(0)
-const xMax = ref(1)
 const xFormat = ref('number') // number | elapsed | time | datetime
 const xPrecision = ref(2) // fractional digits / resolution
-const xRangeInitialized = ref(false)
-const xRangeTouched = ref(false)
+const displayPoints = ref(500) // latest N samples shown live (history buffer is separate)
 
 // Per-frame data feeding the chart.
 const activeData = computed(() => (source.value === 'udp' ? stream.chartData.value : parsed.value))
@@ -66,21 +69,6 @@ function xBounds(data) {
   return [min, max]
 }
 
-function maybeSeedXRange(data = activeData.value) {
-  if (xMode.value !== 'fixed' || xRangeInitialized.value || xRangeTouched.value) return
-  const range = xBounds(data)
-  if (!range) return
-  xMin.value = range[0]
-  xMax.value = range[1]
-  xRangeInitialized.value = true
-}
-
-watch(activeData, maybeSeedXRange)
-
-watch(xMode, (mode) => {
-  if (mode === 'fixed') maybeSeedXRange()
-})
-
 // Stable series list for the sidebar tree — does NOT change every animation frame, so the
 // tree only re-renders when the set of names changes.
 const seriesForSelector = computed(() => {
@@ -92,11 +80,11 @@ const seriesForSelector = computed(() => {
 async function handleFile(file) {
   loading.value = true
   error.value = ''
-  xRangeInitialized.value = false
+  xView.value = null
   try {
     const data = await uploadCsv(file)
     parsed.value = data
-    visible.value = new Set() // default: nothing selected
+    sp.clearAll() // fresh single empty focused plot
     source.value = 'csv'
   } catch (e) {
     error.value = e.message || 'Failed to parse file'
@@ -108,54 +96,33 @@ async function handleFile(file) {
 
 // --- UDP ------------------------------------------------------------------ //
 async function handleConnect({ host, port, timestampField }) {
-  xRangeInitialized.value = false
+  paused.value = false
+  xView.value = null
   await stream.start(host, port, timestampField)
   if (stream.status.value === 'connected' || stream.status.value === 'connecting') {
-    visible.value = new Set() // default: nothing selected (new series appear unchecked)
+    sp.clearAll() // fresh single empty focused plot (new series appear unchecked)
     source.value = 'udp'
   }
 }
 
-// --- series selection ----------------------------------------------------- //
+// --- series selection (acts on the focused subplot) ----------------------- //
 function toggle(i) {
-  const next = new Set(visible.value)
-  if (next.has(i)) next.delete(i)
-  else next.add(i)
-  visible.value = next
+  sp.toggleSeries(i)
 }
 function toggleGroup({ indices, value }) {
-  const next = new Set(visible.value)
-  for (const i of indices) {
-    if (value) next.add(i)
-    else next.delete(i)
-  }
-  visible.value = next
+  sp.setSeries(indices, value)
 }
 function selectAll() {
-  visible.value = new Set(seriesForSelector.value.map((_, i) => i))
+  sp.selectAll(seriesForSelector.value.map((_, i) => i))
 }
 function selectNone() {
-  visible.value = new Set()
+  sp.selectNone()
 }
 
-// --- drag series onto the chart ------------------------------------------- //
-const dragOver = ref(false)
-
-function onChartDragOver(e) {
-  if (!hasDragData(e)) return
-  e.preventDefault()
-  e.dataTransfer.dropEffect = 'copy'
-  dragOver.value = true
-}
-function onChartDragLeave(e) {
-  // Only clear when the pointer actually leaves the wrap (not when entering a child).
-  if (!e.currentTarget.contains(e.relatedTarget)) dragOver.value = false
-}
-function onChartDrop(e) {
-  e.preventDefault()
-  dragOver.value = false
-  const indices = getDragData(e)
-  if (indices && indices.length) toggleGroup({ indices, value: true }) // append
+// --- subplot grid events -------------------------------------------------- //
+function onSeriesDrop({ id, indices }) {
+  sp.focus(id)
+  sp.addSeries(indices, id) // append
 }
 
 // --- resizable sidebar ---------------------------------------------------- //
@@ -198,23 +165,37 @@ onBeforeUnmount(() => {
   window.removeEventListener('mouseup', onSplitterUp)
 })
 
+// --- pause / time scrubber (drives every subplot) ------------------------- //
+const gridRef = ref(null)
+const paused = stream.paused // ref; reception is frozen while true
+const xView = ref(null) // [min,max] visible chart window (shared by all subplots)
+const bufExtent = computed(() => xBounds(activeData.value)) // full CSV / stream buffer bounds
+
+function togglePause() {
+  if (!bufExtent.value) return
+  // Reception master: freeze/resume the shared buffer for ALL plots. Per-subplot playback is
+  // independent — plots that were following simply resume on their own as new data flows in.
+  paused.value = !paused.value
+}
+
+function onScrub(range) {
+  xView.value = range
+  gridRef.value?.setFocusedXView?.(range[0], range[1]) // scrub the focused subplot only
+}
+
+function resetDisplayView() {
+  xView.value = null
+  gridRef.value?.resetFocusedView?.() // reset the focused subplot's view
+}
+
 function reset() {
   if (source.value === 'udp') stream.stop()
+  paused.value = false
+  xView.value = null
   source.value = null
   parsed.value = null
-  visible.value = new Set()
+  sp.clearAll()
   error.value = ''
-  xRangeInitialized.value = false
-}
-
-function setXMin(value) {
-  xRangeTouched.value = true
-  xMin.value = value
-}
-
-function setXMax(value) {
-  xRangeTouched.value = true
-  xMax.value = value
 }
 </script>
 
@@ -319,7 +300,7 @@ function setXMax(value) {
       <aside class="sidebar" :style="{ flex: `0 0 ${sidebarWidth}px`, width: sidebarWidth + 'px' }">
         <SeriesSelector
           :series="seriesForSelector"
-          :visible="visible"
+          :visible="focusedVisible"
           @toggle="toggle"
           @toggleGroup="toggleGroup"
           @all="selectAll"
@@ -333,46 +314,124 @@ function setXMax(value) {
         @dblclick="resetSidebar"
       ></div>
       <section class="chart-area">
-        <PlotControls
-          v-model:yMode="yMode"
-          v-model:yMin="yMin"
-          v-model:yMax="yMax"
-          v-model:xMode="xMode"
-          :xMin="xMin"
-          :xMax="xMax"
-          v-model:xFormat="xFormat"
-          v-model:xPrecision="xPrecision"
-          :live="source === 'udp'"
-          :maxPoints="stream.maxPoints.value"
-          @update:xMin="setXMin"
-          @update:xMax="setXMax"
-          @update:maxPoints="stream.maxPoints.value = $event"
-        />
-        <div
-          class="chart-wrap"
-          :class="{ 'drag-over': dragOver }"
-          @dragover="onChartDragOver"
-          @dragenter="onChartDragOver"
-          @dragleave="onChartDragLeave"
-          @drop="onChartDrop"
-        >
-          <PlotChart
+        <div class="controls-row">
+          <PlotControls
+            v-model:yMode="yMode"
+            v-model:yMin="yMin"
+            v-model:yMax="yMax"
+            v-model:xFormat="xFormat"
+            v-model:xPrecision="xPrecision"
+            v-model:displayPoints="displayPoints"
+            :live="source === 'udp'"
+            :maxPoints="stream.maxPoints.value"
+            @update:maxPoints="stream.maxPoints.value = $event"
+            @reset-display="resetDisplayView"
+          />
+          <div class="layout-tools">
+            <div class="segmented">
+              <button
+                :class="{ active: sp.layoutMode.value === 'adaptive' }"
+                @click="sp.setLayoutMode('adaptive')"
+              >
+                Adaptive
+              </button>
+              <button
+                :class="{ active: sp.layoutMode.value === 'manual' }"
+                @click="sp.setLayoutMode('manual')"
+              >
+                Manual
+              </button>
+            </div>
+            <template v-if="sp.layoutMode.value === 'manual'">
+              <input
+                class="grid-num"
+                type="number"
+                min="1"
+                max="6"
+                :value="sp.cols.value"
+                @input="sp.setCols(Number($event.target.value))"
+                aria-label="Columns"
+                title="Columns"
+              />
+              <span class="times">×</span>
+              <input
+                class="grid-num"
+                type="number"
+                min="1"
+                max="6"
+                :value="sp.rows.value"
+                @input="sp.setRows(Number($event.target.value))"
+                aria-label="Rows"
+                title="Rows"
+              />
+            </template>
+            <button class="add-plot" title="Add subplot" @click="sp.addSubplot()">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+              >
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+              <span>Plot</span>
+            </button>
+          </div>
+        </div>
+        <div class="grid-wrap">
+          <SubplotGrid
+            ref="gridRef"
+            :subplots="sp.subplots.value"
+            :focusedId="sp.focusedId.value"
+            :maximizedId="sp.maximizedId.value"
+            :colNum="sp.colNum"
             :parsed="activeData"
-            :visible="visible"
             :live="source === 'udp'"
             :yMode="yMode"
             :yMin="yMin"
             :yMax="yMax"
-            :xMode="xMode"
-            :xMin="xMin"
-            :xMax="xMax"
             :xFormat="xFormat"
             :xPrecision="xPrecision"
+            :gaps="source === 'udp' ? stream.gaps.value : null"
+            :displayPoints="displayPoints"
+            @focus="sp.focus($event)"
+            @close="sp.removeSubplot($event)"
+            @toggle-maximize="sp.toggleMaximize($event)"
+            @series-drop="onSeriesDrop"
+            @layout-updated="sp.applyLayout($event)"
+            @view-change="xView = $event"
           />
-          <p v-if="source === 'udp' && activeData.series.length === 0" class="waiting">
-            Waiting for data on {{ stream.stats.host }}:{{ stream.stats.port }}…
-          </p>
-          <div v-if="dragOver" class="drop-hint">Drop to plot</div>
+        </div>
+        <div v-if="source === 'csv' || source === 'udp'" class="timebar-row">
+          <button
+            v-if="source === 'udp'"
+            class="pause-btn"
+            type="button"
+            :disabled="!bufExtent"
+            :title="
+              paused
+                ? 'Resume data reception (all plots)'
+                : 'Pause data reception (all plots; per-plot play/pause is in each plot\'s header)'
+            "
+            @click="togglePause"
+          >
+            <svg v-if="paused" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+            <svg v-else viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M6 5h4v14H6zM14 5h4v14h-4z" />
+            </svg>
+            <span>{{ paused ? 'Resume' : 'Pause' }}</span>
+          </button>
+          <TimeBar
+            :extent="bufExtent"
+            :view="xView ?? bufExtent"
+            :disabled="!bufExtent"
+            :xFormat="xFormat"
+            :xPrecision="xPrecision"
+            @update:view="onScrub"
+          />
         </div>
       </section>
     </main>
@@ -591,17 +650,113 @@ function setXMax(value) {
   display: flex;
   flex-direction: column;
 }
-.chart-wrap {
+.controls-row {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.layout-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 12px;
+}
+.layout-tools .segmented {
+  display: inline-flex;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 3px;
+}
+.layout-tools .segmented button {
+  background: transparent;
+  color: var(--text-muted);
+  border: none;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.layout-tools .segmented button.active {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+.grid-num {
+  width: 48px;
+  background: var(--bg-elev);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+}
+.times {
+  color: var(--text-dim);
+}
+.add-plot {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border: none;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.add-plot:hover {
+  opacity: 0.9;
+}
+.add-plot svg {
+  width: 14px;
+  height: 14px;
+}
+.grid-wrap {
   flex: 1;
   min-height: 0;
   position: relative;
-  border-radius: 10px;
-  transition: outline-color 0.15s ease;
-  outline: 2px dashed transparent;
-  outline-offset: -2px;
 }
-.chart-wrap.drag-over {
-  outline-color: var(--accent);
+.timebar-row {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding-top: 12px;
+}
+.pause-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 12px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border: none;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+.pause-btn:hover {
+  opacity: 0.9;
+}
+.pause-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.pause-btn svg {
+  width: 13px;
+  height: 13px;
 }
 .waiting {
   position: absolute;

@@ -305,6 +305,17 @@ export function useAnalysis(activeData, live) {
     analyses.value = []
     spectrumResults.value = []
   }
+  // Restore filters/analyses from a saved dashboard. Bumps the id counter past restored ids so
+  // newly added filters/analyses never collide. Spectral results recompute via the watch.
+  function restore(snap) {
+    filters.value = Array.isArray(snap?.filters) ? snap.filters.map((f) => ({ ...f })) : []
+    analyses.value = Array.isArray(snap?.analyses) ? snap.analyses.map((a) => ({ ...a })) : []
+    for (const item of [...filters.value, ...analyses.value]) {
+      const n = parseInt(String(item.id).replace(/^a/, ''), 10)
+      if (Number.isFinite(n) && n > seq) seq = n
+    }
+    schedule()
+  }
 
   return {
     filters,
@@ -321,5 +332,6 @@ export function useAnalysis(activeData, live) {
     updateAnalysis,
     removeAnalysis,
     clear,
+    restore,
   }
 }

@@ -15,6 +15,8 @@ const props = defineProps({
   live: { type: Boolean, default: false },
   gaps: { type: Array, default: null },
   displayPoints: { type: Number, default: 0 },
+  // Per-series color overrides (name -> hex), shared by every subplot.
+  colors: { type: Object, default: () => ({}) },
 })
 
 const emit = defineEmits([
@@ -554,6 +556,7 @@ function onFrameDrop(e, id) {
               :xPrecision="sp.axes.xPrecision"
               :gaps="gaps"
               :displayPoints="displayPoints"
+              :colors="colors"
               @view-change="onChildView(sp.id, $event)"
               @follow-change="onChildFollow(sp.id, $event)"
             />

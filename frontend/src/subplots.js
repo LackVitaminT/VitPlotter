@@ -5,11 +5,21 @@ import { reactive, ref } from 'vue'
 
 const COL_NUM = 12 // grid columns the layout engine works in
 const STORE_KEY = 'vitplotter-subplots'
+// Per-subplot axis settings: Y mode/range and X format/resolution are independent per plot.
+const AXIS_DEFAULTS = { yMode: 'auto', yMin: 0, yMax: 1, xFormat: 'number', xPrecision: 2 }
 
 let seq = 0
 function nextId() {
   seq += 1
   return `p${seq}`
+}
+// After restoring subplots with ids like 'p3','p7', advance the counter past them so newly
+// added plots never collide with restored ones.
+function bumpSeqPast(ids) {
+  for (const id of ids) {
+    const n = parseInt(String(id).replace(/^p/, ''), 10)
+    if (Number.isFinite(n) && n > seq) seq = n
+  }
 }
 
 // Adaptive grid: near-square arrangement for n subplots.
@@ -70,8 +80,7 @@ export function useSubplots() {
       id,
       layout: { x: 0, y: 0, w: 6, h: 6, i: id },
       visible: reactive(new Set()),
-      // Per-subplot axis settings: Y mode/range and X format/resolution are independent per plot.
-      axes: reactive({ yMode: 'auto', yMin: 0, yMax: 1, xFormat: 'number', xPrecision: 2 }),
+      axes: reactive({ ...AXIS_DEFAULTS }),
     })
     relayout()
     if (focusIt) focusedId.value = id
@@ -167,6 +176,34 @@ export function useSubplots() {
     addSubplot(true)
   }
 
+  // Rebuild the whole grid from a saved dashboard. Geometry and axes are restored verbatim (we
+  // do NOT call relayout(), which would re-tile and clobber the saved positions). Visibility is
+  // restored by NAME, recorded on each subplot as `wantNames`; App.vue resolves these to indices
+  // as the series list materializes (immediate for CSV, gradual for UDP). Falls back to a single
+  // empty plot if the snapshot has no subplots.
+  function restoreLayout(snap) {
+    const list = snap?.subplots ?? []
+    if (!list.length) {
+      clearAll()
+      return
+    }
+    subplots.value = list.map((s) => ({
+      id: s.id,
+      layout: { x: s.layout.x, y: s.layout.y, w: s.layout.w, h: s.layout.h, i: s.id },
+      visible: reactive(new Set()),
+      axes: reactive({ ...AXIS_DEFAULTS, ...(s.axes || {}) }),
+      wantNames: Array.isArray(s.visibleNames) ? [...s.visibleNames] : [],
+    }))
+    bumpSeqPast(subplots.value.map((s) => s.id))
+    // Set modes directly (not via setLayoutMode → relayout) so saved geometry survives.
+    layoutMode.value = snap.layoutMode === 'manual' ? 'manual' : 'adaptive'
+    if (Number.isFinite(snap.cols)) cols.value = Math.max(1, Math.min(6, snap.cols))
+    if (Number.isFinite(snap.rows)) rows.value = Math.max(1, Math.min(6, snap.rows))
+    maximizedId.value = find(snap.maximizedId) ? snap.maximizedId : null
+    focusedId.value = find(snap.focusedId) ? snap.focusedId : subplots.value[0].id
+    persist()
+  }
+
   // Adopt the grid's updated layout (user drag/resize). Keep our items in sync.
   function applyLayout(items) {
     for (const it of items) {
@@ -213,6 +250,7 @@ export function useSubplots() {
     selectNone,
     remapVisibleByName,
     clearAll,
+    restoreLayout,
     applyLayout,
     relayout,
     setLayoutMode,

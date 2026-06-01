@@ -1,6 +1,6 @@
 <script setup>
 import { computed, reactive, ref, watchEffect } from 'vue'
-import { colorFor } from '../palette.js'
+import { colorForName } from '../palette.js'
 import { theme } from '../theme.js'
 import { setDragData } from '../dnd.js'
 
@@ -9,9 +9,19 @@ const props = defineProps({
   series: { type: Array, required: true },
   // Set of visible series indices.
   visible: { type: Object, required: true },
+  // Per-series color overrides (name -> hex). Override wins over the theme palette.
+  colors: { type: Object, default: () => ({}) },
 })
 
-const emit = defineEmits(['toggle', 'toggleGroup', 'all', 'none'])
+const emit = defineEmits(['toggle', 'toggleGroup', 'all', 'none', 'setColor', 'resetColor'])
+
+// Color helpers, keyed by the full series name (so a custom color sticks to the curve).
+const nameOf = (i) => props.series[i]?.name
+const swatchColor = (i) => colorForName(theme.value, i, nameOf(i), props.colors)
+const hasOverride = (i) => {
+  const n = nameOf(i)
+  return n != null && props.colors[n] != null
+}
 
 // Local directive: bind the checkbox's `indeterminate` DOM property.
 const vIndeterminate = {
@@ -243,7 +253,26 @@ function onDragEnd(e) {
             :checked="visible.has(row.index)"
             @change="emit('toggle', row.index)"
           />
-          <span class="swatch" :style="{ background: colorFor(theme, row.index) }"></span>
+          <span class="swatch-wrap" @click.stop>
+            <span class="swatch" :style="{ background: swatchColor(row.index) }"></span>
+            <input
+              class="color-input"
+              type="color"
+              :value="swatchColor(row.index)"
+              title="Pick a color for this series"
+              @click.stop
+              @input="emit('setColor', { name: nameOf(row.index), color: $event.target.value })"
+            />
+            <button
+              v-if="hasOverride(row.index)"
+              type="button"
+              class="color-reset"
+              title="Reset to default color"
+              @click.stop="emit('resetColor', nameOf(row.index))"
+            >
+              ×
+            </button>
+          </span>
           <span class="name" :title="row.path">{{ row.label }}</span>
         </label>
       </li>
@@ -387,11 +416,59 @@ function onDragEnd(e) {
   font-weight: 600;
   color: var(--text-muted);
 }
+.swatch-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
 .swatch {
   width: 12px;
   height: 12px;
   border-radius: 3px;
   flex: 0 0 auto;
+  cursor: pointer;
+  box-shadow: 0 0 0 1px var(--border) inset;
+}
+.swatch-wrap:hover .swatch {
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+/* Native color input overlaid invisibly on the swatch — clicking the swatch opens the picker. */
+.color-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  opacity: 0;
+  cursor: pointer;
+}
+.color-reset {
+  position: absolute;
+  left: 50%;
+  top: -8px;
+  transform: translateX(-50%);
+  width: 13px;
+  height: 13px;
+  display: none;
+  place-items: center;
+  background: var(--bg-elev);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 1;
+}
+.swatch-wrap:hover .color-reset {
+  display: grid;
+}
+.color-reset:hover {
+  color: var(--text);
+  border-color: var(--accent);
 }
 .name {
   overflow: hidden;

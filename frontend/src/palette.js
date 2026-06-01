@@ -46,3 +46,10 @@ export function colorFor(theme, index) {
   const palette = PALETTES[theme] || PALETTES.dark
   return palette.series[index % palette.series.length]
 }
+
+// Name-aware color: a per-series override (keyed by series name) wins over the theme palette.
+// Used so custom colors survive series reordering and are restored from a saved dashboard.
+export function colorForName(theme, index, name, overrides) {
+  const custom = overrides && name != null ? overrides[name] : null
+  return custom || colorFor(theme, index)
+}

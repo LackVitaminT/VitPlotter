@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import FileDropZone from './components/FileDropZone.vue'
 import StreamConnect from './components/StreamConnect.vue'
 import SeriesSelector from './components/SeriesSelector.vue'
@@ -10,10 +10,13 @@ import SubplotGrid from './components/SubplotGrid.vue'
 import TimeBar from './components/TimeBar.vue'
 import Typewriter from './components/Typewriter.vue'
 import ChangelogModal from './components/ChangelogModal.vue'
+import DashboardMenu from './components/DashboardMenu.vue'
 import { uploadCsv } from './api.js'
 import { useUdpStream } from './stream.js'
 import { useSubplots } from './subplots.js'
 import { useAnalysis } from './analysis.js'
+import { useColors } from './colors.js'
+import * as dashboard from './dashboard.js'
 import { theme, toggleTheme } from './theme.js'
 import { randomWelcomeTagline } from './taglines.js'
 
@@ -32,9 +35,12 @@ const source = ref(null) // null | 'csv' | 'udp' (what currently drives the work
 const parsed = ref(null) // CSV result
 const loading = ref(false)
 const error = ref('')
+// Last UDP connection params, kept so a dashboard can save/restore (and reconnect to) them.
+const udpConfig = ref({ host: '0.0.0.0', port: 9870, timestampField: '' })
 
 const stream = useUdpStream()
 const sp = useSubplots() // subplots: grid of plot frames, each with its own visible-set
+const colors = useColors() // per-series color overrides (name -> hex), shared by all subplots
 
 // Source feeding the chart (base series only), before analysis derived curves are appended.
 const baseData = computed(() => (source.value === 'udp' ? stream.chartData.value : parsed.value))
@@ -98,13 +104,35 @@ const seriesForSelector = computed(() =>
 )
 
 // Keep each subplot's visible-set pointing at the right curves as the series list changes order or
-// length (UDP adding channels, or filter overlays being added/removed) — remap by name.
+// length (UDP adding channels, or filter overlays being added/removed) — remap by name. Also drive
+// dashboard restore: a restored subplot carries `wantNames` (the curves the saved dashboard had
+// selected); when one of those names FIRST appears in the list, we check it. The first-appearance
+// guard (seenNames) means later manual un-checks aren't overwritten when more UDP channels arrive.
 let prevSeriesNames = []
+let seenNames = new Set()
+
+function reconcileVisible(names) {
+  const nameIndex = new Map()
+  names.forEach((n, i) => {
+    if (!nameIndex.has(n)) nameIndex.set(n, i)
+  })
+  for (const sub of sp.subplots.value) {
+    if (!sub.wantNames || !sub.wantNames.length) continue
+    for (const name of sub.wantNames) {
+      if (seenNames.has(name)) continue // only on a name's first appearance
+      const idx = nameIndex.get(name)
+      if (idx != null) sub.visible.add(idx)
+    }
+  }
+}
+
 watch(
   seriesForSelector,
   (cur) => {
     const names = cur.map((s) => s.name)
     sp.remapVisibleByName(prevSeriesNames, names)
+    reconcileVisible(names)
+    for (const n of names) seenNames.add(n)
     prevSeriesNames = names
   },
   { immediate: true },
@@ -119,6 +147,7 @@ async function handleFile(file) {
     const data = await uploadCsv(file)
     parsed.value = data
     analysis.clear() // filters/analyses reference the previous source's series by name
+    colors.reset() // color overrides are keyed by series name; drop the previous source's
     sp.clearAll() // fresh single empty focused plot
     source.value = 'csv'
   } catch (e) {
@@ -135,7 +164,9 @@ async function handleConnect({ host, port, timestampField }) {
   xView.value = null
   await stream.start(host, port, timestampField)
   if (stream.status.value === 'connected' || stream.status.value === 'connecting') {
+    udpConfig.value = { host, port, timestampField: timestampField || '' }
     analysis.clear()
+    colors.reset()
     sp.clearAll() // fresh single empty focused plot (new series appear unchecked)
     source.value = 'udp'
   }
@@ -280,9 +311,184 @@ function reset() {
   source.value = null
   parsed.value = null
   analysis.clear()
+  colors.reset()
   sp.clearAll()
+  seenNames = new Set()
   error.value = ''
+  dashboard.clearAutosave() // back to the welcome screen → nothing to auto-restore
 }
+
+// --- dashboard save / restore -------------------------------------------- //
+const dashStatus = ref('') // transient message shown in the dashboard menu
+const savedList = ref(dashboard.listNamed())
+function refreshSaved() {
+  savedList.value = dashboard.listNamed()
+}
+
+// Bundle the live state the serializer reads from.
+function dashboardCtx() {
+  return {
+    source: source.value,
+    parsed: parsed.value,
+    udp: {
+      host: udpConfig.value.host,
+      port: udpConfig.value.port,
+      timestampField: udpConfig.value.timestampField,
+      maxPoints: stream.maxPoints.value,
+    },
+    sp,
+    analysis,
+    colors,
+    names: seriesForSelector.value.map((s) => s.name),
+    displayPoints: displayPoints.value,
+    sidebarWidth: sidebarWidth.value,
+    seriesRatio: seriesRatio.value,
+  }
+}
+
+// Apply a saved snapshot onto the live composables. Order matters (see plan): tear down → display
+// dims → colors/analysis (so derived names exist) → data source → subplots → resolve visibility.
+async function applyDashboard(snap) {
+  if (!snap) return
+  if (source.value === 'udp') await stream.stop()
+  paused.value = false
+  xView.value = null
+  error.value = ''
+
+  const d = snap.display || {}
+  if (Number.isFinite(d.displayPoints)) displayPoints.value = d.displayPoints
+  if (Number.isFinite(d.sidebarWidth)) sidebarWidth.value = clampWidth(d.sidebarWidth)
+  if (Number.isFinite(d.seriesRatio)) seriesRatio.value = clampRatio(d.seriesRatio)
+
+  colors.replaceAll(snap.colors || {})
+  analysis.restore(snap.analysis || {})
+
+  if (snap.source === 'csv') {
+    // csvOmitted snapshots (saved past the storage quota without data) can't restore the plot.
+    parsed.value = snap.csv && !snap.csv.csvOmitted ? snap.csv : null
+    source.value = parsed.value ? 'csv' : null
+  } else if (snap.source === 'udp' && snap.udp) {
+    udpConfig.value = {
+      host: snap.udp.host,
+      port: snap.udp.port,
+      timestampField: snap.udp.timestampField || '',
+    }
+    if (Number.isFinite(snap.udp.maxPoints)) stream.maxPoints.value = snap.udp.maxPoints
+    await stream.start(snap.udp.host, snap.udp.port, snap.udp.timestampField || '')
+    source.value =
+      stream.status.value === 'connected' || stream.status.value === 'connecting' ? 'udp' : null
+  }
+
+  sp.restoreLayout(snap.layout)
+
+  // Resolve wanted curves against the names available now (all for CSV; UDP fills in as it streams,
+  // handled by the seriesForSelector watch). Reset seenNames so current names count as fresh.
+  await nextTick()
+  seenNames = new Set()
+  const names = seriesForSelector.value.map((s) => s.name)
+  reconcileVisible(names)
+  for (const n of names) seenNames.add(n)
+  prevSeriesNames = names
+}
+
+// Debounced autosave: coalesce rapid changes into one localStorage write.
+let autosaveTimer = null
+function scheduleAutosave() {
+  if (source.value === null) return // nothing meaningful to save on the welcome screen
+  if (autosaveTimer) clearTimeout(autosaveTimer)
+  autosaveTimer = setTimeout(() => {
+    autosaveTimer = null
+    const res = dashboard.saveAutosave(dashboard.serialize(dashboardCtx()))
+    if (res.omittedCsv) {
+      dashStatus.value = 'Auto-saved layout only — CSV is too large for browser storage.'
+    } else if (!res.ok) {
+      dashStatus.value = res.error || 'Could not auto-save dashboard.'
+    }
+  }, 500)
+}
+// Shallow watch: identity-only sources (avoid deep-traversing the large CSV `parsed` object).
+watch(
+  [
+    source,
+    parsed,
+    displayPoints,
+    sidebarWidth,
+    seriesRatio,
+    sp.layoutMode,
+    sp.cols,
+    sp.rows,
+    sp.focusedId,
+    sp.maximizedId,
+    stream.maxPoints,
+  ],
+  scheduleAutosave,
+)
+// Deep watch: structures whose internals change in place (selections, axes, filters, colors).
+watch(
+  [sp.subplots, analysis.filters, analysis.analyses, () => colors.overrides],
+  scheduleAutosave,
+  {
+    deep: true,
+  },
+)
+
+// --- dashboard menu actions ---------------------------------------------- //
+function onDashSave() {
+  const res = dashboard.saveAutosave(dashboard.serialize(dashboardCtx()))
+  dashStatus.value = res.ok
+    ? res.omittedCsv
+      ? 'Saved layout only (CSV too large).'
+      : 'Saved.'
+    : res.error || 'Could not save.'
+}
+function onDashSaveAs(name) {
+  const res = dashboard.saveNamed(name, dashboard.serialize(dashboardCtx()))
+  refreshSaved()
+  dashStatus.value = res.ok ? `Saved “${name}”.` : res.error || 'Could not save.'
+}
+async function onDashLoad(name) {
+  const snap = dashboard.loadNamed(name)
+  if (!snap) {
+    dashStatus.value = 'Could not load dashboard.'
+    return
+  }
+  try {
+    await applyDashboard(snap)
+    dashStatus.value = `Loaded “${name}”.`
+  } catch (e) {
+    dashStatus.value = e?.message || 'Could not load dashboard.'
+  }
+}
+function onDashDelete(name) {
+  dashboard.deleteNamed(name)
+  refreshSaved()
+  dashStatus.value = `Deleted “${name}”.`
+}
+function onDashExport() {
+  dashboard.exportToFile(dashboard.serialize(dashboardCtx()), source.value || 'dashboard')
+}
+async function onDashImport(file) {
+  try {
+    const snap = await dashboard.importFromFile(file)
+    await applyDashboard(snap)
+    dashStatus.value = 'Imported dashboard.'
+  } catch (e) {
+    dashStatus.value = e?.message || 'Could not import file.'
+  }
+}
+
+// Auto-restore the last session's dashboard on open.
+onMounted(async () => {
+  try {
+    const snap = dashboard.loadAutosave()
+    if (snap) await applyDashboard(snap)
+  } catch {
+    // corrupt/incompatible autosave → fall back to the welcome screen
+  }
+})
+onBeforeUnmount(() => {
+  if (autosaveTimer) clearTimeout(autosaveTimer)
+})
 </script>
 
 <template>
@@ -311,6 +517,19 @@ function reset() {
         {{ stream.stats.host }}:{{ stream.stats.port }} · {{ stream.stats.series }} series ·
         {{ stream.stats.packets }} packets
       </span>
+
+      <DashboardMenu
+        :names="savedList"
+        :hasData="hasData"
+        :status="dashStatus"
+        @open="refreshSaved"
+        @save="onDashSave"
+        @save-as="onDashSaveAs"
+        @load="onDashLoad"
+        @delete="onDashDelete"
+        @export="onDashExport"
+        @import="onDashImport"
+      />
 
       <button
         class="icon-btn"
@@ -408,10 +627,13 @@ function reset() {
           <SeriesSelector
             :series="seriesForSelector"
             :visible="focusedVisible"
+            :colors="colors.overrides"
             @toggle="toggle"
             @toggleGroup="toggleGroup"
             @all="selectAll"
             @none="selectNone"
+            @setColor="colors.setColor($event.name, $event.color)"
+            @resetColor="colors.clearColor"
           />
         </div>
         <div
@@ -525,6 +747,7 @@ function reset() {
             :live="source === 'udp'"
             :gaps="source === 'udp' ? stream.gaps.value : null"
             :displayPoints="displayPoints"
+            :colors="colors.overrides"
             @focus="sp.focus($event)"
             @close="sp.removeSubplot($event)"
             @clear-series="sp.selectNone($event)"

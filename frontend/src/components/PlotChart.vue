@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import uPlot from 'uplot'
-import { PALETTES, colorFor } from '../palette.js'
+import { PALETTES, colorForName } from '../palette.js'
 import { theme } from '../theme.js'
 import { formatAxisTimestamp, formatTimestamp, xAxisLabelSpace } from '../xaxis.js'
 
@@ -23,6 +23,8 @@ const props = defineProps({
   gaps: { type: Array, default: null },
   // Default number of latest samples to show (the trailing window width). 0 = show all.
   displayPoints: { type: Number, default: 0 },
+  // Per-series color overrides (name -> hex). Override wins over the theme palette.
+  colors: { type: Object, default: () => ({}) },
 })
 
 // view-change: the visible x-window changed (drives the focus-bound time bar).
@@ -140,7 +142,11 @@ const seriesMeta = ref([])
 const legendItems = computed(() =>
   seriesMeta.value
     .filter((m) => props.visible.has(m.index))
-    .map((m) => ({ name: m.name, index: m.index, color: colorFor(theme.value, m.index) })),
+    .map((m) => ({
+      name: m.name,
+      index: m.index,
+      color: colorForName(theme.value, m.index, m.name, props.colors),
+    })),
 )
 
 function clamp(value, min, max) {
@@ -211,7 +217,12 @@ function updateHoverTip(u = plot) {
     left: clamp(pointLeft + (flip ? -12 : 12), 8, Math.max(8, hostRect.width - 8)),
     top: clamp(pointTop - 10, 26, Math.max(26, hostRect.height - 8)),
     flip,
-    color: colorFor(theme.value, best.visibleIndex),
+    color: colorForName(
+      theme.value,
+      best.visibleIndex,
+      props.parsed.series[best.visibleIndex]?.name,
+      props.colors,
+    ),
     series: props.parsed.series[best.visibleIndex]?.name || `Series ${best.visibleIndex + 1}`,
     x: formatTimestamp(best.x, props.xFormat, props.xPrecision),
     y: formatYValue(best.y),
@@ -449,7 +460,7 @@ function buildOptions(width, height) {
     ...props.parsed.series.map((s, i) => ({
       label: s.name,
       show: props.visible.has(i),
-      stroke: palette.series[i % palette.series.length],
+      stroke: colorForName(theme.value, i, s.name, props.colors),
       width: 1.5,
       points: { show: false },
     })),
@@ -750,6 +761,9 @@ watch(
 
 // Theme change → rebuild to repaint axes/series colors.
 watch(theme, render)
+
+// Per-series color override changed → rebuild to repaint strokes (infrequent; same cost as theme).
+watch(() => props.colors, render, { deep: true })
 
 // Live changes toggle manual zoom/scrub interactions (no rebuild needed).
 watch(() => props.live, syncInteractions)

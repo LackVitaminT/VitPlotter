@@ -25,11 +25,14 @@ const props = defineProps({
   displayPoints: { type: Number, default: 0 },
   // Per-series color overrides (name -> hex). Override wins over the theme palette.
   colors: { type: Object, default: () => ({}) },
+  // Dual-cursor measurement on the focused plot: { active, ax, bx } (x data values) or null.
+  measure: { type: Object, default: null },
 })
 
 // view-change: the visible x-window changed (drives the focus-bound time bar).
 // follow-change: this plot's live-follow state flipped (drives its header play/pause button).
-const emit = defineEmits(['view-change', 'follow-change'])
+// measure-change: a measurement cursor was dragged → { which:'a'|'b', x } (x data value).
+const emit = defineEmits(['view-change', 'follow-change', 'measure-change'])
 
 const HOVER_PROX = 16
 const MENU_WIDTH = 190
@@ -116,6 +119,108 @@ function updateMarkers(u = plot) {
     out.push({ left: left0 + px, top, height: overRect.height })
   }
   markers.value = out
+}
+
+// Pixel geometry of the measurement cursors (left of each line + the band between them), recomputed
+// after every draw and whenever the cursor x-values change. Null when measurement is inactive.
+const measurePx = ref(null)
+
+function updateMeasureOverlay(u = plot) {
+  const m = props.measure
+  if (!u || !hostEl.value || !m || !m.active || m.ax == null || m.bx == null) {
+    if (measurePx.value) measurePx.value = null
+    return
+  }
+  const hostRect = hostEl.value.getBoundingClientRect()
+  const overRect = u.over.getBoundingClientRect()
+  const left0 = overRect.left - hostRect.left
+  const top = overRect.top - hostRect.top
+  const aPos = u.valToPos(m.ax, 'x')
+  const bPos = u.valToPos(m.bx, 'x')
+  if (!Number.isFinite(aPos) || !Number.isFinite(bPos)) {
+    measurePx.value = null
+    return
+  }
+  const aLeft = left0 + aPos
+  const bLeft = left0 + bPos
+  measurePx.value = {
+    top,
+    height: overRect.height,
+    aLeft,
+    bLeft,
+    bandLeft: Math.min(aLeft, bLeft),
+    bandWidth: Math.abs(bLeft - aLeft),
+    aLabel: formatTimestamp(m.ax, props.xFormat, props.xPrecision),
+    bLabel: formatTimestamp(m.bx, props.xFormat, props.xPrecision),
+    dxLabel: 'Δ ' + formatYValue(Math.abs(m.bx - m.ax)),
+  }
+}
+
+// Pointer x (clientX) → data value, clamped to the data bounds.
+function pointerToX(clientX, bounds) {
+  const rect = plot.over.getBoundingClientRect()
+  let x = plot.posToVal(clientX - rect.left, 'x')
+  if (bounds) x = Math.min(bounds[1], Math.max(bounds[0], x))
+  return x
+}
+
+// Shared drag plumbing: capture the pointer, suppress text selection, run `onMove(ev)` per move.
+function beginDrag(e, onMove) {
+  e.preventDefault()
+  e.stopPropagation()
+  e.currentTarget?.setPointerCapture?.(e.pointerId)
+  document.body.style.userSelect = 'none'
+  document.body.style.cursor = 'ew-resize'
+  const move = (ev) => onMove(ev)
+  const up = () => {
+    document.body.style.userSelect = ''
+    document.body.style.cursor = ''
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', up)
+  }
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', up)
+}
+
+// Drag one cursor (A or B) to a new data x.
+function startCursorDrag(which, e) {
+  if (!plot) return
+  const bounds = xDataBounds()
+  beginDrag(e, (ev) => {
+    const x = pointerToX(ev.clientX, bounds)
+    if (Number.isFinite(x)) emit('measure-change', { which, x })
+  })
+}
+
+// Drag the band between the cursors to slide the whole selection left/right (keeps its width;
+// clamps to the data bounds).
+function startBandDrag(e) {
+  if (!plot || !props.measure) return
+  const bounds = xDataBounds()
+  const a0 = props.measure.ax
+  const b0 = props.measure.bx
+  const startX = pointerToX(e.clientX, null)
+  beginDrag(e, (ev) => {
+    let delta = pointerToX(ev.clientX, null) - startX
+    let na = a0 + delta
+    let nb = b0 + delta
+    if (bounds) {
+      const lo = Math.min(na, nb)
+      const hi = Math.max(na, nb)
+      if (lo < bounds[0]) {
+        const sh = bounds[0] - lo
+        na += sh
+        nb += sh
+      } else if (hi > bounds[1]) {
+        const sh = hi - bounds[1]
+        na -= sh
+        nb -= sh
+      }
+    }
+    if (Number.isFinite(na) && Number.isFinite(nb)) {
+      emit('measure-change', { which: 'band', ax: na, bx: nb })
+    }
+  })
 }
 
 const hoverTip = ref(null)
@@ -500,6 +605,9 @@ function buildOptions(width, height) {
       // (updateHoverTip). The native points are round divs colored by series stroke and
       // leave stray colored dots near the chart/control edges, so turn them off.
       points: { show: false },
+      // No left-drag box-zoom: panning/zooming is wheel + double-click only, and a free left
+      // drag is reserved for moving the measurement cursors.
+      drag: { x: false, y: false, setScale: false },
     },
     legend: { show: false }, // we render our own compact, visible-only legend below
     hooks: {
@@ -513,8 +621,13 @@ function buildOptions(width, height) {
           }
         },
       ],
-      // Reposition paused-gap markers after every draw (zoom/scrub/data/resize).
-      draw: [(u) => updateMarkers(u)],
+      // Reposition paused-gap markers + measurement cursors after every draw.
+      draw: [
+        (u) => {
+          updateMarkers(u)
+          updateMeasureOverlay(u)
+        },
+      ],
       setCursor: [(u) => updateHoverTip(u)],
     },
   }
@@ -676,7 +789,13 @@ function refresh() {
   const h = hostEl.value.clientHeight
   if (w > 0 && h > 0) plot.setSize({ width: w, height: h })
 }
-defineExpose({ setXView, resetView, refresh, play, pause })
+// Current visible x-window (live scale), used to place measurement cursors in view.
+function getXRange() {
+  if (!plot) return null
+  const s = plot.scales.x
+  return Number.isFinite(s.min) && Number.isFinite(s.max) ? [s.min, s.max] : null
+}
+defineExpose({ setXView, resetView, refresh, play, pause, getXRange })
 
 function render() {
   if (plot) {
@@ -775,6 +894,13 @@ watch(
   { deep: true },
 )
 
+// Measurement cursors moved / toggled → reposition the overlay (no chart rebuild needed).
+watch(
+  () => props.measure,
+  () => updateMeasureOverlay(),
+  { deep: true },
+)
+
 // Display-window size changed → if following, recompute the trailing width.
 watch(
   () => props.displayPoints,
@@ -812,6 +938,47 @@ watch(
       >
         <span class="gap-tip">Paused data</span>
       </div>
+      <template v-if="measurePx">
+        <div
+          class="measure-band"
+          title="Drag to move the whole selection"
+          :style="{
+            left: measurePx.bandLeft + 'px',
+            top: measurePx.top + 'px',
+            width: measurePx.bandWidth + 'px',
+            height: measurePx.height + 'px',
+          }"
+          @pointerdown="startBandDrag($event)"
+          @wheel="onPlotWheel"
+          @dblclick="resetView"
+        >
+          <span class="measure-dx">{{ measurePx.dxLabel }}</span>
+        </div>
+        <div
+          class="measure-cursor a"
+          :style="{
+            left: measurePx.aLeft + 'px',
+            top: measurePx.top + 'px',
+            height: measurePx.height + 'px',
+          }"
+          @pointerdown="startCursorDrag('a', $event)"
+        >
+          <span class="measure-handle">A</span>
+          <span class="measure-label">{{ measurePx.aLabel }}</span>
+        </div>
+        <div
+          class="measure-cursor b"
+          :style="{
+            left: measurePx.bLeft + 'px',
+            top: measurePx.top + 'px',
+            height: measurePx.height + 'px',
+          }"
+          @pointerdown="startCursorDrag('b', $event)"
+        >
+          <span class="measure-handle">B</span>
+          <span class="measure-label">{{ measurePx.bLabel }}</span>
+        </div>
+      </template>
       <div
         v-if="hoverTip"
         class="hover-tip"
@@ -932,6 +1099,81 @@ watch(
 }
 .gap-marker:hover .gap-tip {
   opacity: 1;
+}
+/* Measurement: shaded selection band + two draggable vertical cursors (A / B). */
+.measure-band {
+  position: absolute;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  cursor: grab;
+  z-index: 3;
+  touch-action: none;
+}
+.measure-band:active {
+  cursor: grabbing;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.measure-dx {
+  position: absolute;
+  top: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  background: var(--bg-elev);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.measure-cursor {
+  position: absolute;
+  width: 0;
+  border-left: 1.5px solid var(--accent);
+  cursor: ew-resize;
+  z-index: 4;
+  touch-action: none;
+}
+/* Invisible widened hit strip so the thin line is easy to grab. */
+.measure-cursor::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -7px;
+  width: 14px;
+}
+.measure-handle {
+  position: absolute;
+  top: 2px;
+  left: 0;
+  transform: translateX(-50%);
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+.measure-label {
+  position: absolute;
+  bottom: 2px;
+  left: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  background: var(--bg-elev);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 5px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
 }
 .hover-tip {
   position: absolute;

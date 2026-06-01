@@ -17,6 +17,8 @@ const props = defineProps({
   displayPoints: { type: Number, default: 0 },
   // Per-series color overrides (name -> hex), shared by every subplot.
   colors: { type: Object, default: () => ({}) },
+  // Dual-cursor measurement state ({ active, ax, bx }) or null — applied to the focused plot only.
+  measure: { type: Object, default: null },
 })
 
 const emit = defineEmits([
@@ -27,6 +29,7 @@ const emit = defineEmits([
   'series-drop',
   'layout-updated',
   'view-change',
+  'measure-change',
 ])
 
 const MARGIN = 8 // px gutter between cells (and around the grid)
@@ -80,7 +83,10 @@ function setFocusedXView(min, max) {
 function resetFocusedView() {
   chartRefs.get(props.focusedId)?.resetView?.()
 }
-defineExpose({ setFocusedXView, resetFocusedView })
+function getFocusedXRange() {
+  return chartRefs.get(props.focusedId)?.getXRange?.() ?? null
+}
+defineExpose({ setFocusedXView, resetFocusedView, getFocusedXRange })
 
 // --- layout state ---------------------------------------------------------- //
 // `layout` is the committed grid (engine items {i,x,y,w,h}). It is OUR source of truth while a
@@ -557,8 +563,10 @@ function onFrameDrop(e, id) {
               :gaps="gaps"
               :displayPoints="displayPoints"
               :colors="colors"
+              :measure="sp.id === focusedId ? measure : null"
               @view-change="onChildView(sp.id, $event)"
               @follow-change="onChildFollow(sp.id, $event)"
+              @measure-change="emit('measure-change', $event)"
             />
             <div v-if="!sp.visible.size" class="empty-hint">
               Drag or check a series to plot here

@@ -11,11 +11,13 @@ import TimeBar from './components/TimeBar.vue'
 import Typewriter from './components/Typewriter.vue'
 import ChangelogModal from './components/ChangelogModal.vue'
 import DashboardMenu from './components/DashboardMenu.vue'
+import MeasurePanel from './components/MeasurePanel.vue'
 import { uploadCsv } from './api.js'
 import { useUdpStream } from './stream.js'
 import { useSubplots } from './subplots.js'
 import { useAnalysis } from './analysis.js'
 import { useColors } from './colors.js'
+import { useMeasure } from './measure.js'
 import * as dashboard from './dashboard.js'
 import { theme, toggleTheme } from './theme.js'
 import { randomWelcomeTagline } from './taglines.js'
@@ -41,6 +43,8 @@ const udpConfig = ref({ host: '0.0.0.0', port: 9870, timestampField: '' })
 const stream = useUdpStream()
 const sp = useSubplots() // subplots: grid of plot frames, each with its own visible-set
 const colors = useColors() // per-series color overrides (name -> hex), shared by all subplots
+const measure = useMeasure() // dual-cursor measurement on the focused plot
+const bottomTab = ref('analysis') // bottom sidebar pane: 'analysis' | 'measure'
 
 // Source feeding the chart (base series only), before analysis derived curves are appended.
 const baseData = computed(() => (source.value === 'udp' ? stream.chartData.value : parsed.value))
@@ -103,6 +107,17 @@ const seriesForSelector = computed(() =>
   [...baseNames.value, ...analysis.derivedNames.value].map((name) => ({ name })),
 )
 
+// Dual-cursor measurement results for the focused plot's visible curves (ΔX/ΔY + region stats).
+const measureResults = computed(() =>
+  measure.computeResults(
+    activeData.value,
+    [...focusedVisible.value],
+    seriesForSelector.value.map((s) => s.name),
+    colors.overrides,
+    theme.value,
+  ),
+)
+
 // Keep each subplot's visible-set pointing at the right curves as the series list changes order or
 // length (UDP adding channels, or filter overlays being added/removed) — remap by name. Also drive
 // dashboard restore: a restored subplot carries `wantNames` (the curves the saved dashboard had
@@ -148,6 +163,7 @@ async function handleFile(file) {
     parsed.value = data
     analysis.clear() // filters/analyses reference the previous source's series by name
     colors.reset() // color overrides are keyed by series name; drop the previous source's
+    measure.reset() // cursors belong to the previous source's x-domain
     sp.clearAll() // fresh single empty focused plot
     source.value = 'csv'
   } catch (e) {
@@ -167,6 +183,7 @@ async function handleConnect({ host, port, timestampField }) {
     udpConfig.value = { host, port, timestampField: timestampField || '' }
     analysis.clear()
     colors.reset()
+    measure.reset()
     sp.clearAll() // fresh single empty focused plot (new series appear unchecked)
     source.value = 'udp'
   }
@@ -312,10 +329,28 @@ function reset() {
   parsed.value = null
   analysis.clear()
   colors.reset()
+  measure.reset()
   sp.clearAll()
   seenNames = new Set()
   error.value = ''
   dashboard.clearAutosave() // back to the welcome screen → nothing to auto-restore
+}
+
+// --- measurement (dual cursors on the focused plot) ----------------------- //
+function onMeasureToggle() {
+  // Place cursors inside the focused plot's current visible window (fall back to scrub/buffer).
+  const view = gridRef.value?.getFocusedXRange?.() ?? xView.value ?? bufExtent.value
+  measure.toggle(view)
+}
+function onMeasureChange(e) {
+  if (e.which === 'band') {
+    measure.setA(e.ax)
+    measure.setB(e.bx)
+  } else if (e.which === 'a') {
+    measure.setA(e.x)
+  } else {
+    measure.setB(e.x)
+  }
 }
 
 // --- dashboard save / restore -------------------------------------------- //
@@ -643,7 +678,16 @@ onBeforeUnmount(() => {
           @dblclick="resetPaneSplit"
         ></div>
         <div class="analysis-pane" :style="{ flex: `${1 - seriesRatio} 1 0` }">
+          <div class="pane-tabs">
+            <button :class="{ active: bottomTab === 'analysis' }" @click="bottomTab = 'analysis'">
+              Analysis
+            </button>
+            <button :class="{ active: bottomTab === 'measure' }" @click="bottomTab = 'measure'">
+              Measure
+            </button>
+          </div>
           <AnalysisPanel
+            v-if="bottomTab === 'analysis'"
             :filters="analysis.filters.value"
             :analyses="analysis.analyses.value"
             :sourceNames="baseNames"
@@ -656,6 +700,13 @@ onBeforeUnmount(() => {
             @add-analysis="analysis.addAnalysis"
             @update-analysis="analysis.updateAnalysis"
             @remove-analysis="analysis.removeAnalysis"
+          />
+          <MeasurePanel
+            v-else
+            :results="measureResults"
+            :active="measure.active.value"
+            :hasData="hasData"
+            @toggle="onMeasureToggle"
           />
         </div>
       </aside>
@@ -748,11 +799,17 @@ onBeforeUnmount(() => {
             :gaps="source === 'udp' ? stream.gaps.value : null"
             :displayPoints="displayPoints"
             :colors="colors.overrides"
+            :measure="
+              measure.active.value
+                ? { active: true, ax: measure.ax.value, bx: measure.bx.value }
+                : null
+            "
             @focus="sp.focus($event)"
             @close="sp.removeSubplot($event)"
             @clear-series="sp.selectNone($event)"
             @toggle-maximize="sp.toggleMaximize($event)"
             @series-drop="onSeriesDrop"
+            @measure-change="onMeasureChange"
             @layout-updated="sp.applyLayout($event)"
             @view-change="xView = $event"
           />
@@ -1067,6 +1124,34 @@ onBeforeUnmount(() => {
 .analysis-pane {
   min-height: 0;
   overflow-y: auto;
+}
+/* Tabs switching the bottom pane between Analysis and Measure. */
+.pane-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 10px;
+  padding: 3px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.pane-tabs button {
+  flex: 1;
+  background: transparent;
+  color: var(--text-muted);
+  border: none;
+  border-radius: 6px;
+  padding: 5px 0;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pane-tabs button.active {
+  background: var(--accent);
+  color: var(--accent-contrast);
 }
 .pane-splitter {
   flex: 0 0 6px;

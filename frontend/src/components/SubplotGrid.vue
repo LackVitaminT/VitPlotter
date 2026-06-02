@@ -30,6 +30,7 @@ const emit = defineEmits([
   'layout-updated',
   'view-change',
   'measure-change',
+  'rename',
 ])
 
 const MARGIN = 8 // px gutter between cells (and around the grid)
@@ -434,7 +435,7 @@ function onFrameDrop(e, id) {
       <div v-if="ghost" class="ghost" :style="ghostStyle"></div>
 
       <div
-        v-for="sp in subplots"
+        v-for="(sp, idx) in subplots"
         :key="sp.id"
         class="item"
         :class="{
@@ -455,7 +456,18 @@ function onFrameDrop(e, id) {
             @dblclick="emit('toggle-maximize', sp.id)"
           >
             <span class="grip" aria-hidden="true">⋮⋮</span>
-            <span class="frame-title">Plot</span>
+            <input
+              class="frame-title"
+              type="text"
+              :value="sp.name"
+              :placeholder="`Plot ${idx + 1}`"
+              title="Click to rename this plot"
+              spellcheck="false"
+              @pointerdown.stop
+              @dblclick.stop
+              @keydown.enter="$event.target.blur()"
+              @change="emit('rename', { id: sp.id, name: $event.target.value })"
+            />
             <button
               v-if="live"
               class="frame-btn play-btn"
@@ -687,11 +699,33 @@ function onFrameDrop(e, id) {
   line-height: 1;
   letter-spacing: -2px;
 }
+/* Editable plot title: looks like a label until focused, then shows an input affordance. */
 .frame-title {
   flex: 1;
+  min-width: 0;
   font-size: 11px;
   font-weight: 600;
+  font-family: inherit;
   color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 2px 5px;
+  outline: none;
+  cursor: text;
+  text-overflow: ellipsis;
+}
+.frame-title::placeholder {
+  color: var(--text-dim);
+  font-weight: 600;
+}
+.frame-title:hover {
+  border-color: var(--border);
+}
+.frame-title:focus {
+  border-color: var(--accent);
+  background: var(--bg-inset);
+  color: var(--text);
 }
 .frame-btn {
   display: inline-flex;

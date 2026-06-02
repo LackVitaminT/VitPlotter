@@ -15,6 +15,7 @@ export function serialize(ctx) {
   const nameOf = (idx) => ctx.names[idx]
   const subplots = ctx.sp.subplots.value.map((s) => ({
     id: s.id,
+    name: s.name || '',
     layout: { x: s.layout.x, y: s.layout.y, w: s.layout.w, h: s.layout.h, i: s.id },
     axes: { ...s.axes },
     // Visibility by NAME (robust to index shifts and ready to restore on a different series order).

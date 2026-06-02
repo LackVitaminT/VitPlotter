@@ -728,7 +728,41 @@ function onPlotWheel(e) {
   plot.setScale('x', { min: nextMin, max: nextMax })
 }
 
-// Wheel-zoom + double-click-reset are always available (CSV, live, or paused).
+// Left-drag in the plot area pans the x-view (the old box-zoom is gone). Holds the span fixed and
+// shifts within the data bounds; panning off the right edge stops live-following.
+function onPlotPanDown(e) {
+  if (!plot || e.button !== 0) return
+  const bounds = xDataBounds()
+  const s = plot.scales.x
+  if (!bounds || !Number.isFinite(s.min) || !Number.isFinite(s.max)) return
+  const width = plot.over.clientWidth || 1
+  const startX = e.clientX
+  const startMin = s.min
+  const startMax = s.max
+  const span = startMax - startMin
+  if (span <= 0) return
+  closeContextMenu()
+  plot.over.style.cursor = 'grabbing'
+  document.body.style.userSelect = 'none'
+
+  const move = (ev) => {
+    const dData = -((ev.clientX - startX) * span) / width
+    const [nMin, nMax] = clampRangeToBounds(startMin + dData, startMax + dData, bounds)
+    viewWidth = nMax - nMin
+    setFollowing(nMax >= bounds[1] - viewWidth * 0.01)
+    plot.setScale('x', { min: nMin, max: nMax })
+  }
+  const up = () => {
+    plot.over.style.cursor = ''
+    document.body.style.userSelect = ''
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', up)
+  }
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', up)
+}
+
+// Wheel-zoom + drag-pan + double-click-reset are always available (CSV, live, or paused).
 function syncInteractions() {
   detachPlotInteractions?.()
   if (!plot) return
@@ -738,13 +772,16 @@ function syncInteractions() {
   const onMouseLeave = () => {
     hoverTip.value = null
   }
+  over.style.cursor = 'grab'
   over.addEventListener('wheel', onPlotWheel, { passive: false })
+  over.addEventListener('pointerdown', onPlotPanDown)
   over.addEventListener('dblclick', onDoubleClick)
   over.addEventListener('contextmenu', openContextMenu)
   over.addEventListener('mouseleave', onMouseLeave)
 
   detachPlotInteractions = () => {
     over.removeEventListener('wheel', onPlotWheel)
+    over.removeEventListener('pointerdown', onPlotPanDown)
     over.removeEventListener('dblclick', onDoubleClick)
     over.removeEventListener('contextmenu', openContextMenu)
     over.removeEventListener('mouseleave', onMouseLeave)

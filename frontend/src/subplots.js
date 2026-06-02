@@ -78,6 +78,7 @@ export function useSubplots() {
     const id = nextId()
     subplots.value.push({
       id,
+      name: '', // user-editable title (empty → placeholder shown)
       layout: { x: 0, y: 0, w: 6, h: 6, i: id },
       visible: reactive(new Set()),
       axes: reactive({ ...AXIS_DEFAULTS }),
@@ -140,6 +141,11 @@ export function useSubplots() {
     const sp = find(id)
     if (sp) Object.assign(sp.axes, patch)
   }
+  // Rename a subplot (custom title shown in its header).
+  function setName(id, name) {
+    const sp = find(id)
+    if (sp) sp.name = String(name ?? '')
+  }
   function selectAll(allIndices, id = focusedId.value) {
     const sp = find(id)
     if (sp) sp.visible = new Set(allIndices)
@@ -189,6 +195,7 @@ export function useSubplots() {
     }
     subplots.value = list.map((s) => ({
       id: s.id,
+      name: typeof s.name === 'string' ? s.name : '',
       layout: { x: s.layout.x, y: s.layout.y, w: s.layout.w, h: s.layout.h, i: s.id },
       visible: reactive(new Set()),
       axes: reactive({ ...AXIS_DEFAULTS, ...(s.axes || {}) }),
@@ -246,6 +253,7 @@ export function useSubplots() {
     setSeries,
     addSeries,
     setAxes,
+    setName,
     selectAll,
     selectNone,
     remapVisibleByName,

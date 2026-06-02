@@ -810,6 +810,7 @@ onBeforeUnmount(() => {
             @toggle-maximize="sp.toggleMaximize($event)"
             @series-drop="onSeriesDrop"
             @measure-change="onMeasureChange"
+            @rename="sp.setName($event.id, $event.name)"
             @layout-updated="sp.applyLayout($event)"
             @view-change="xView = $event"
           />
